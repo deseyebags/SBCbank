@@ -1,3 +1,5 @@
+
+# For LocalStack, comment out the backend block below to use local state
 terraform {
   required_version = ">= 1.5.0"
 
@@ -9,18 +11,48 @@ terraform {
   }
 
   # Remote state backend – update bucket/key/region before first init.
-  # Comment this block out to use a local state file during local development.
-  backend "s3" {
-    bucket         = "sbcbank-terraform-state"
-    key            = "sbcbank/terraform.tfstate"
-    region         = "ap-southeast-1"
-    encrypt        = true
-    dynamodb_table = "sbcbank-terraform-locks"
-  }
+  # Comment this block out to use a local state file during local development or with LocalStack.
+  # backend "s3" {
+  #   bucket         = "sbcbank-terraform-state"
+  #   key            = "sbcbank/terraform.tfstate"
+  #   region         = "ap-southeast-1"
+  #   encrypt        = true
+  #   dynamodb_table = "sbcbank-terraform-locks"
+  # }
 }
 
 provider "aws" {
-  region = var.aws_region
+  region                      = var.aws_region
+  skip_credentials_validation = var.use_localstack
+  skip_metadata_api_check     = var.use_localstack
+  s3_force_path_style         = var.use_localstack
+
+  access_key                  = var.use_localstack ? "test" : null
+  secret_key                  = var.use_localstack ? "test" : null
+  endpoints = var.use_localstack ? {
+    apigateway     = "http://localhost:4566"
+    cloudwatch     = "http://localhost:4566"
+    dynamodb       = "http://localhost:4566"
+    ec2            = "http://localhost:4566"
+    ecs            = "http://localhost:4566"
+    elasticache    = "http://localhost:4566"
+    es             = "http://localhost:4566"
+    iam            = "http://localhost:4566"
+    kinesis        = "http://localhost:4566"
+    kms            = "http://localhost:4566"
+    lambda         = "http://localhost:4566"
+    rds            = "http://localhost:4566"
+    route53        = "http://localhost:4566"
+    redshift       = "http://localhost:4566"
+    s3             = "http://localhost:4566"
+    secretsmanager = "http://localhost:4566"
+    ses            = "http://localhost:4566"
+    sns            = "http://localhost:4566"
+    sqs            = "http://localhost:4566"
+    ssm            = "http://localhost:4566"
+    sts            = "http://localhost:4566"
+    cloudformation = "http://localhost:4566"
+  } : {}
 
   default_tags {
     tags = {

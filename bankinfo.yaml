@@ -1,0 +1,223 @@
+project:
+  name: singapore-digital-bank
+  region: ap-southeast-1
+  compliance:
+    frameworks:
+      - MAS_TRM
+      - MAS_Outsourcing_Guidelines
+      - PDPA
+      - PCI_DSS_optional
+  objectives:
+    - high_availability
+    - multi_az
+    - least_privilege_iam
+    - encryption_at_rest
+    - encryption_in_transit
+    - centralized_audit_logging
+    - real_time_fraud_detection
+    - compliance_dashboard
+
+organization:
+  type: aws_organizations
+  accounts:
+    - name: production
+    - name: development
+    - name: security_logging
+    - name: shared_services
+  service_control_policies:
+    - deny_root_user_actions
+    - restrict_non_singapore_regions
+    - enforce_encryption
+
+networking:
+  vpc:
+    cidr: 10.0.0.0/16
+    availability_zones: 2
+  subnets:
+    public:
+      per_az: true
+      resources:
+        - application_load_balancer
+        - nat_gateway
+    private_application:
+      per_az: true
+      resources:
+        - ecs_services
+        - lambda_functions
+        - step_functions
+    private_data:
+      per_az: true
+      resources:
+        - rds_multi_az
+        - elasticache_redis
+  gateways:
+    - internet_gateway
+    - nat_gateway_per_az
+  vpc_endpoints:
+    gateway:
+      - s3
+      - dynamodb
+    interface:
+      - secrets_manager
+      - sqs
+      - sns
+      - kms
+      - cloudwatch_logs
+
+edge_security:
+  dns:
+    service: route53
+  cdn:
+    service: cloudfront
+  waf:
+    rules:
+      - owasp_managed_rules
+      - rate_limiting
+      - geo_restrictions_optional
+  ddos_protection:
+    service: shield_advanced
+  tls:
+    certificate_manager: acm
+    minimum_version: TLS1.2
+
+application_layer:
+  compute:
+    platform: ecs_fargate
+  services:
+    - name: user_service
+    - name: account_service
+    - name: transaction_service
+    - name: ledger_service
+    - name: statement_service
+    - name: notification_service
+  serverless:
+    - name: payment_processing_lambda
+    - name: fraud_scoring_lambda_optional
+  orchestration:
+    service: step_functions
+    workflows:
+      - transaction_flow
+      - fraud_evaluation_flow
+
+data_layer:
+  dynamodb:
+    tables:
+      - transactions_table
+      - ledger_table
+      - fraud_events_table
+    encryption: kms_customer_managed
+    point_in_time_recovery: true
+  rds:
+    engine: aurora_postgresql
+    multi_az: true
+    encryption: kms_customer_managed
+    backups:
+      automated: true
+      cross_region_replication_optional: true
+  elasticache:
+    engine: redis
+    multi_az: true
+    encryption_at_rest: true
+    encryption_in_transit: true
+  s3:
+    buckets:
+      - statements_bucket
+      - centralized_logs_bucket
+    encryption: sse_kms
+    object_lock: enabled_for_logs
+
+identity_and_access:
+  iam:
+    enforce_mfa: true
+    roles:
+      - admin_role
+      - devops_role
+      - auditor_role
+      - support_read_only_role
+    service_roles:
+      - ecs_task_role
+      - lambda_execution_role
+      - step_functions_role
+  sso:
+    service: iam_identity_center
+  permission_model:
+    - least_privilege
+    - no_wildcard_policies
+    - short_lived_sessions
+
+encryption:
+  kms:
+    customer_managed_keys:
+      - transaction_data_key
+      - pii_data_key
+      - logs_key
+    key_rotation: enabled
+    key_access_restriction: strict
+
+monitoring_and_security:
+  logging:
+    cloudtrail:
+      enabled: true
+      centralized_account: security_logging
+      log_file_validation: true
+    vpc_flow_logs: enabled
+    alb_access_logs: enabled
+  monitoring:
+    cloudwatch_metrics: enabled
+    cloudwatch_alarms: enabled
+    sns_alerts: enabled
+  threat_detection:
+    guardduty: enabled
+    inspector: enabled
+    ecr_image_scanning: enabled
+  governance:
+    aws_config: enabled
+    security_hub: enabled
+    iam_access_analyzer: enabled
+
+fraud_detection_layer:
+  real_time_scoring:
+    option_primary: amazon_fraud_detector
+    option_alternative: sagemaker_endpoint
+  integration:
+    triggered_by: step_functions
+    outputs:
+      - risk_score
+      - approve
+      - flag
+      - escalate
+  storage:
+    - fraud_events_table
+
+compliance_dashboard:
+  aggregation_sources:
+    - aws_config
+    - security_hub
+    - guardduty
+    - cloudtrail
+    - iam_access_analyzer
+  dashboard_engine:
+    - cloudwatch_dashboard
+    - quicksight_optional
+  metrics:
+    - encryption_compliance_percentage
+    - public_resource_exposure
+    - iam_policy_violations
+    - mfa_enforcement_rate
+    - critical_security_findings
+  optional_auto_remediation:
+    - lambda_auto_fix_misconfigurations
+
+disaster_recovery:
+  rto_minutes: 30
+  rpo_minutes: 5
+  rds_cross_region_backup: optional
+  dynamodb_pitr: enabled
+  s3_cross_region_replication_optional: true
+
+security_principles:
+  - zero_trust_networking
+  - no_public_databases
+  - encryption_everywhere
+  - immutable_audit_logs
+  - separation_of_duties

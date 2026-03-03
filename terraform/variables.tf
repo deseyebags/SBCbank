@@ -101,3 +101,10 @@ variable "ecs_task_memory" {
   type        = number
   default     = 512
 }
+
+# LocalStack toggle (set to true for local development)
+variable "use_localstack" {
+  description = "Set to true to use LocalStack endpoints for local development."
+  type        = bool
+  default     = false
+}
