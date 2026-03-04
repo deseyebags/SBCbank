@@ -76,12 +76,19 @@ export AWS_DEFAULT_REGION=ap-southeast-1
 export LOCALSTACK_HOST=localhost
 ```
 
+```Powershell
+$env:AWS_ACCESS_KEY_ID="test"
+$env:AWS_SECRET_ACCESS_KEY="test"
+$env:AWS_DEFAULT_REGION="ap-southeast-1"
+$env:LOCALSTACK_HOST="localhost"
+```
+
 ### 5. Deploy infrastructure with Terraform
 
 ```bash
 cd terraform
 terraform init
-terraform apply -var-file=localstack.tfvars -var="db_password=localpassword"
+terraform apply -var-file="localstack.tfvars" -var="db_password=localpassword"
 ```
 
 > **Note:**

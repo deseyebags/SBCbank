@@ -23,15 +23,20 @@ terraform {
 
 provider "aws" {
   region                      = var.aws_region
-  skip_credentials_validation = var.use_localstack
-  skip_metadata_api_check     = var.use_localstack
-  s3_force_path_style         = var.use_localstack
+  skip_credentials_validation = true
+  skip_metadata_api_check     = true
+  skip_requesting_account_id  = true
+  s3_use_path_style = var.use_localstack
 
   access_key                  = var.use_localstack ? "test" : null
   secret_key                  = var.use_localstack ? "test" : null
-  endpoints = var.use_localstack ? {
+  endpoints  {
+    elbv2  = "http://localhost:4566"
+    apigatewayv2 = "http://localhost:4566"
+    logs = "http://localhost:4566"
     apigateway     = "http://localhost:4566"
     cloudwatch     = "http://localhost:4566"
+    cloudfront     = "http://localhost:4566"
     dynamodb       = "http://localhost:4566"
     ec2            = "http://localhost:4566"
     ecs            = "http://localhost:4566"
@@ -52,7 +57,7 @@ provider "aws" {
     ssm            = "http://localhost:4566"
     sts            = "http://localhost:4566"
     cloudformation = "http://localhost:4566"
-  } : {}
+  }
 
   default_tags {
     tags = {
