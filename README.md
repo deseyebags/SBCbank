@@ -40,12 +40,13 @@ SBCbank is designed as a set of cloud-native microservices hosted on AWS:
 
 ## Local Development with LocalStack
 
-This project is optimized for local development using LocalStack, which emulates AWS services on your machine. No real AWS account or credentials are required.
+This project is optimised for local development using LocalStack, which emulates AWS services on your machine. No real AWS account or credentials are required.
 
 ### 1. Prerequisites
 
 - [LocalStack](https://github.com/localstack/localstack)
   - Install via Homebrew: `brew install localstack`
+  - Install via pip: `pip install localstack`
 - [Docker](https://www.docker.com/) (required for LocalStack)
 - [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5.0
 - [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) >= 2.x
@@ -88,10 +89,12 @@ $env:LOCALSTACK_HOST="localhost"
 ```bash
 cd terraform
 terraform init
+terraform validate
 terraform apply -var-file="localstack.tfvars" -var="db_password=localpassword"
 ```
 
 > **Note:**
+> - The `terraform validate` step checks whether the config is valid.
 > - The `localstack.tfvars` file configures Terraform to use LocalStack endpoints and disables the remote backend.
 > - All resources are created locally and are accessible via LocalStack at `localhost:4566`.
 > - Not all AWS services are fully emulated, but core services (VPC, S3, SQS, RDS, ECS, etc.) are supported.
