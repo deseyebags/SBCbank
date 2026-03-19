@@ -136,8 +136,8 @@ resource "aws_security_group" "ecs_tasks" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port       = 0
-    to_port         = 65535
+    from_port       = 80
+    to_port         = 80
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }
@@ -234,6 +234,44 @@ resource "aws_lb_listener" "http" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.default.arn
+  }
+}
+
+resource "aws_lb_target_group" "microservice" {
+  for_each = toset(local.microservices)
+
+  name        = substr("${local.prefix}-${each.key}-tg", 0, 32)
+  port        = 80
+  protocol    = "HTTP"
+  target_type = "ip"
+  vpc_id      = aws_vpc.main.id
+
+  health_check {
+    path                = "/health"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    interval            = 30
+    matcher             = "200-399"
+  }
+
+  tags = { Name = "${local.prefix}-${each.key}-tg" }
+}
+
+resource "aws_lb_listener_rule" "microservice" {
+  for_each = local.microservice_route_priorities
+
+  listener_arn = aws_lb_listener.http.arn
+  priority     = each.value
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.microservice[each.key].arn
+  }
+
+  condition {
+    path_pattern {
+      values = [local.microservice_route_paths[each.key]]
+    }
   }
 }
 
@@ -511,4 +549,268 @@ resource "aws_cloudwatch_log_group" "app" {
   name              = "/sbcbank/${var.environment}/app"
   retention_in_days = 30
   tags              = { Name = "${local.prefix}-log-group" }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cognito – authentication/user management
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_cognito_user_pool" "main" {
+  name = "${local.prefix}-${var.cognito_user_pool_name}"
+
+  password_policy {
+    minimum_length    = 12
+    require_lowercase = true
+    require_numbers   = true
+    require_symbols   = true
+    require_uppercase = true
+  }
+
+  tags = { Name = "${local.prefix}-cognito-user-pool" }
+}
+
+resource "aws_cognito_user_pool_client" "web" {
+  name         = "${local.prefix}-web-client"
+  user_pool_id = aws_cognito_user_pool.main.id
+
+  generate_secret                      = false
+  explicit_auth_flows                  = ["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_SRP_AUTH"]
+  prevent_user_existence_errors        = "ENABLED"
+  supported_identity_providers         = ["COGNITO"]
+  allowed_oauth_flows_user_pool_client = false
+}
+
+resource "aws_cognito_identity_pool" "main" {
+  identity_pool_name               = "${local.prefix}-${var.cognito_identity_pool_name}"
+  allow_unauthenticated_identities = false
+
+  cognito_identity_providers {
+    client_id               = aws_cognito_user_pool_client.web.id
+    provider_name           = aws_cognito_user_pool.main.endpoint
+    server_side_token_check = false
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lambda – async functions scaffold
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_iam_role" "lambda_execution" {
+  name = "${local.prefix}-lambda-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
+  role       = aws_iam_role.lambda_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "notification" {
+  function_name = "${local.prefix}-notification-lambda"
+  role          = aws_iam_role.lambda_execution.arn
+  runtime       = var.lambda_runtime
+  handler       = var.notification_lambda_handler
+
+  # TODO: Replace with real Lambda artifact packaging/upload.
+  s3_bucket = aws_s3_bucket.frontend.bucket
+  s3_key    = var.notification_lambda_s3_key
+
+  tags = { Name = "${local.prefix}-notification-lambda" }
+}
+
+resource "aws_lambda_function" "fraud" {
+  function_name = "${local.prefix}-fraud-lambda"
+  role          = aws_iam_role.lambda_execution.arn
+  runtime       = var.lambda_runtime
+  handler       = var.fraud_lambda_handler
+
+  # TODO: Replace with real Lambda artifact packaging/upload.
+  s3_bucket = aws_s3_bucket.frontend.bucket
+  s3_key    = var.fraud_lambda_s3_key
+
+  tags = { Name = "${local.prefix}-fraud-lambda" }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EventBridge – integration event bus + rules
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_cloudwatch_event_bus" "main" {
+  name = "${local.prefix}-${var.eventbridge_bus_name}"
+  tags = { Name = "${local.prefix}-event-bus" }
+}
+
+resource "aws_cloudwatch_event_rule" "notifications" {
+  name           = "${local.prefix}-notifications-rule"
+  event_bus_name = aws_cloudwatch_event_bus.main.name
+  event_pattern = jsonencode({
+    source = ["sbcbank.transactions"]
+    detail = {
+      eventType = ["transaction.created", "transaction.completed"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "notifications_lambda" {
+  rule           = aws_cloudwatch_event_rule.notifications.name
+  event_bus_name = aws_cloudwatch_event_bus.main.name
+  target_id      = "notify-lambda"
+  arn            = aws_lambda_function.notification.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_notification" {
+  statement_id  = "AllowEventBridgeInvokeNotificationLambda"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.notification.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.notifications.arn
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fraud Detector – scaffold placeholder
+# ─────────────────────────────────────────────────────────────────────────────
+
+# NOTE: hashicorp/aws does not currently expose Fraud Detector resources.
+# This placeholder keeps intent explicit until provider support is available
+# or an alternate implementation path (SDK/custom module) is chosen.
+resource "terraform_data" "fraud_detector_stub" {
+  input = {
+    detector_id = "${local.prefix}-${var.fraud_detector_id}"
+    service     = "frauddetector"
+    status      = "stub"
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ECS microservices – task definition + service scaffolding
+# ─────────────────────────────────────────────────────────────────────────────
+
+locals {
+  microservices = [
+    "user",
+    "account",
+    "transaction",
+    "ledger",
+    "statement",
+    "notification"
+  ]
+
+  microservice_route_paths = {
+    user         = "/user/*"
+    account      = "/account/*"
+    transaction  = "/transaction/*"
+    ledger       = "/ledger/*"
+    statement    = "/statement/*"
+    notification = "/notification/*"
+  }
+
+  microservice_route_priorities = {
+    user         = 10
+    account      = 20
+    transaction  = 30
+    ledger       = 40
+    statement    = 50
+    notification = 60
+  }
+}
+
+resource "aws_ecs_task_definition" "microservice" {
+  for_each = toset(local.microservices)
+
+  family                   = "${local.prefix}-${each.key}-service"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = tostring(var.ecs_task_cpu)
+  memory                   = tostring(var.ecs_task_memory)
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task_execution.arn
+
+  # TODO: Replace demo image and env vars with real service containers.
+  container_definitions = jsonencode([
+    {
+      name      = "${each.key}-service"
+      image     = "public.ecr.aws/docker/library/nginx:stable-alpine"
+      essential = true
+      portMappings = [
+        {
+          containerPort = 80
+          hostPort      = 80
+          protocol      = "tcp"
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.app.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = each.key
+        }
+      }
+    }
+  ])
+
+  tags = { Name = "${local.prefix}-${each.key}-taskdef" }
+}
+
+resource "aws_ecs_service" "microservice" {
+  for_each = toset(local.microservices)
+
+  name            = "${local.prefix}-${each.key}-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.microservice[each.key].arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.microservice[each.key].arn
+    container_name   = "${each.key}-service"
+    container_port   = 80
+  }
+
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
+
+  depends_on = [aws_lb_listener_rule.microservice]
+
+  tags = { Name = "${local.prefix}-${each.key}-ecs-service" }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Additional S3 bucket – business data (statements/documents)
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_s3_bucket" "statements" {
+  bucket = "${local.prefix}-statements-${data.aws_caller_identity.current.account_id}"
+  tags   = { Name = "${local.prefix}-statements" }
+}
+
+resource "aws_s3_bucket_public_access_block" "statements" {
+  bucket                  = aws_s3_bucket.statements.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "statements" {
+  bucket = aws_s3_bucket.statements.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
 }

@@ -64,3 +64,48 @@ output "cloudwatch_log_group" {
   description = "Name of the CloudWatch log group for application logs."
   value       = aws_cloudwatch_log_group.app.name
 }
+
+output "cognito_user_pool_id" {
+  description = "ID of the Cognito user pool."
+  value       = aws_cognito_user_pool.main.id
+}
+
+output "cognito_identity_pool_id" {
+  description = "ID of the Cognito identity pool."
+  value       = aws_cognito_identity_pool.main.id
+}
+
+output "notification_lambda_arn" {
+  description = "ARN of the notification Lambda function."
+  value       = aws_lambda_function.notification.arn
+}
+
+output "fraud_lambda_arn" {
+  description = "ARN of the fraud Lambda function."
+  value       = aws_lambda_function.fraud.arn
+}
+
+output "eventbridge_bus_name" {
+  description = "Name of the EventBridge event bus."
+  value       = aws_cloudwatch_event_bus.main.name
+}
+
+output "fraud_detector_name" {
+  description = "Name of the Fraud Detector."
+  value       = terraform_data.fraud_detector_stub.input.detector_id
+}
+
+output "statements_bucket_name" {
+  description = "Name of the S3 bucket for statements and documents."
+  value       = aws_s3_bucket.statements.bucket
+}
+
+output "ecs_microservice_task_definition_arns" {
+  description = "Task definition ARNs for all scaffolded microservices."
+  value       = { for service, td in aws_ecs_task_definition.microservice : service => td.arn }
+}
+
+output "ecs_microservice_service_names" {
+  description = "ECS service names for all scaffolded microservices."
+  value       = { for service, svc in aws_ecs_service.microservice : service => svc.name }
+}

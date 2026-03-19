@@ -108,3 +108,65 @@ variable "use_localstack" {
   type        = bool
   default     = false
 }
+
+# ── Cognito ──────────────────────────────────────────────────────────────────
+
+variable "cognito_user_pool_name" {
+  description = "Name for the Cognito user pool."
+  type        = string
+  default     = "sbcbank-user-pool"
+}
+
+variable "cognito_identity_pool_name" {
+  description = "Name for the Cognito identity pool."
+  type        = string
+  default     = "sbcbank-identity-pool"
+}
+
+# ── Lambda ───────────────────────────────────────────────────────────────────
+
+variable "notification_lambda_handler" {
+  description = "Handler for the notification Lambda function."
+  type        = string
+  default     = "index.handler"
+}
+
+variable "fraud_lambda_handler" {
+  description = "Handler for the fraud Lambda function."
+  type        = string
+  default     = "index.handler"
+}
+
+variable "lambda_runtime" {
+  description = "Runtime for Lambda functions."
+  type        = string
+  default     = "python3.9"
+}
+
+variable "notification_lambda_s3_key" {
+  description = "S3 object key for notification Lambda deployment package."
+  type        = string
+  default     = "notification_lambda.zip"
+}
+
+variable "fraud_lambda_s3_key" {
+  description = "S3 object key for fraud Lambda deployment package."
+  type        = string
+  default     = "fraud_lambda.zip"
+}
+
+# ── EventBridge ──────────────────────────────────────────────────────────────
+
+variable "eventbridge_bus_name" {
+  description = "Name for the EventBridge event bus."
+  type        = string
+  default     = "sbcbank-event-bus"
+}
+
+# ── Fraud Detector ───────────────────────────────────────────────────────────
+
+variable "fraud_detector_id" {
+  description = "ID for the Fraud Detector."
+  type        = string
+  default     = "sbcbank-fraud-detector"
+}
