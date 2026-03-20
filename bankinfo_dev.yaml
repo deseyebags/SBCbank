@@ -1,0 +1,250 @@
+project:
+  name: cloud-native-bank
+  description: >
+    A cloud-native digital banking backend leveraging microservices,
+    serverless orchestration, and event-driven architecture.
+  architecture_style: microservices + event-driven + serverless
+
+services:
+
+  account_service:
+    type: ecs_fargate
+    description: Manages user bank accounts and balances
+    database: aurora_postgresql
+    endpoints:
+      - GET /accounts/{userId}
+      - POST /accounts
+      - POST /accounts/debit
+      - POST /accounts/credit
+    responsibilities:
+      - create_account
+      - retrieve_account
+      - validate_account
+      - debit_balance
+      - credit_balance
+    dependencies:
+      - aurora_db
+
+  payment_service:
+    type: ecs_fargate
+    description: Handles transaction lifecycle for P2P and merchant payments
+    database: aurora_postgresql
+    endpoints:
+      - POST /payments/p2p
+      - POST /payments/merchant
+      - GET /payments/{id}
+    responsibilities:
+      - initiate_transaction
+      - update_transaction_status
+      - publish_payment_events
+    dependencies:
+      - aurora_db
+      - eventbridge
+
+  statement_service:
+    type: ecs_fargate
+    description: Generates account statements and transaction history
+    database: dynamodb_ledger
+    endpoints:
+      - GET /statements/{accountId}
+      - GET /statements/{accountId}?from=&to=
+    responsibilities:
+      - fetch_transaction_history
+      - generate_statement
+    dependencies:
+      - dynamodb_ledger
+
+lambdas:
+
+  fraud_detection_lambda:
+    trigger: step_functions
+    description: Evaluates transactions for fraud risk
+    input:
+      - account_id
+      - amount
+      - transaction_metadata
+    output:
+      - APPROVE
+      - FLAG
+      - BLOCK
+    logic:
+      type: rule_based_mock
+      examples:
+        - condition: amount > 10000
+          result: FLAG
+        - condition: suspicious_pattern
+          result: BLOCK
+
+  notification_lambda:
+    trigger: eventbridge
+    description: Sends notifications for transaction events
+    responsibilities:
+      - send_email
+      - send_sms (mocked)
+    events:
+      - PaymentCompleted
+      - PaymentFailed
+      - FraudFlagged
+
+  compliance_lambda:
+    trigger: eventbridge
+    description: Aggregates events for compliance dashboard
+    responsibilities:
+      - aggregate_metrics
+      - track_fraud_cases
+      - track_failed_transactions
+    storage:
+      - dynamodb
+      - s3
+
+  ledger_lambda:
+    trigger: eventbridge
+    description: Writes immutable transaction records to ledger
+    responsibilities:
+      - append_transaction_record
+      - ensure_immutability
+    storage:
+      - dynamodb
+
+workflows:
+
+  payment_workflow:
+    orchestrator: step_functions
+    steps:
+      - validate_accounts:
+          service: account_service
+      - create_transaction:
+          service: payment_service
+          status: PENDING
+      - fraud_check:
+          lambda: fraud_detection_lambda
+      - decision_branch:
+          APPROVE:
+            - debit_credit_accounts:
+                service: account_service
+            - update_transaction_status:
+                service: payment_service
+                status: SUCCESS
+          FLAG:
+            - send_to_queue:
+                service: sqs
+          BLOCK:
+            - update_transaction_status:
+                service: payment_service
+                status: FAILED
+
+eventing:
+
+  event_bus: eventbridge
+
+  producers:
+    - payment_service
+    - fraud_detection_lambda
+
+  events:
+    - PaymentInitiated
+    - PaymentCompleted
+    - PaymentFailed
+    - FraudFlagged
+
+  consumers:
+    - ledger_lambda
+    - notification_lambda
+    - compliance_lambda
+
+data_stores:
+
+  aurora_db:
+    type: relational
+    usage:
+      - account_service
+      - payment_service
+
+  dynamodb_ledger:
+    type: nosql
+    usage:
+      - ledger_lambda
+      - statement_service
+    design:
+      - append_only
+      - immutable_records
+
+  s3_storage:
+    usage:
+      - logs
+      - compliance_data
+
+messaging:
+
+  sqs:
+    purpose: manual_review_queue
+    consumers:
+      - compliance_team (external/manual)
+
+security:
+
+  authentication:
+    service: cognito
+    method: jwt
+
+  authorization:
+    service: iam
+
+  encryption:
+    at_rest:
+      - kms
+    in_transit:
+      - tls
+
+  networking:
+    vpc: enabled
+    subnets:
+      - public_subnet (ALB)
+      - private_app_subnet (ECS, Lambda)
+      - private_data_subnet (RDS)
+    security_groups:
+      - alb_sg
+      - ecs_sg
+      - rds_sg
+      - redis_sg
+
+observability:
+
+  monitoring:
+    - cloudwatch
+
+  auditing:
+    - cloudtrail
+
+  threat_detection:
+    - guardduty
+
+x_factors:
+
+  fraud_detection:
+    description: real-time fraud scoring integrated into transaction workflow
+
+  compliance_dashboard:
+    description: real-time and batch analytics using lambda, s3, and athena
+
+deployment:
+
+  container_registry:
+    service: ecr
+
+  compute:
+    - ecs_fargate
+    - lambda
+
+  orchestration:
+    - step_functions
+
+  infrastructure:
+    - terraform
+
+notes:
+  - ledger is implemented as lambda + dynamodb (not full microservice)
+  - statement service reads from ledger for audit consistency
+  - event-driven design ensures decoupling and scalability
+  - localstack should be used for lambda, s3, dynamodb, sqs, and eventbridge
+  - unsupported services (cognito, aurora, fraud detector) should be mocked

@@ -1,0 +1,35 @@
+name: Docker Build Checks
+
+on:
+    pull_request:
+    push:
+        branches:
+            - main
+            - master
+
+jobs:
+    build-microservice-images:
+        runs-on: ubuntu-latest
+
+        strategy:
+            fail-fast: false
+            matrix:
+                service:
+                    - account_service
+                    - payment_service
+                    - ledger_service
+                    - statement_service
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Build image
+              run: |
+                  docker build \
+                    -f backend/${{ matrix.service }}/Dockerfile \
+                    -t sbcbank/${{ matrix.service }}:ci \
+                    backend

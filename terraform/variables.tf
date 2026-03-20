@@ -1,3 +1,8 @@
+variable "alb_domain_name" {
+  description = "Domain name for the ALB ACM certificate"
+  type        = string
+  default     = ""
+}
 variable "project_name" {
   description = "Short name used as a prefix for all resource names."
   type        = string
@@ -128,13 +133,13 @@ variable "cognito_identity_pool_name" {
 variable "notification_lambda_handler" {
   description = "Handler for the notification Lambda function."
   type        = string
-  default     = "index.handler"
+  default     = "notification_lambda.handler"
 }
 
 variable "fraud_lambda_handler" {
   description = "Handler for the fraud Lambda function."
   type        = string
-  default     = "index.handler"
+  default     = "fraud_lambda.handler"
 }
 
 variable "lambda_runtime" {

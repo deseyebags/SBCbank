@@ -1,0 +1,303 @@
+meta:
+  document: sbcbank_concrete_overview
+  version: 1
+  intent: combined_development_and_infrastructure_requirements
+  sources:
+    - bankinfo_infra.yaml
+    - bankinfo_dev.yaml
+
+project:
+  name: singapore-digital-bank
+  platform_style: microservices + event-driven + serverless
+  region: ap-southeast-1
+  compliance_frameworks:
+    - MAS_TRM
+    - MAS_Outsourcing_Guidelines
+    - PDPA
+    - PCI_DSS_optional
+  core_objectives:
+    - high_availability
+    - multi_az
+    - least_privilege_iam
+    - encryption_at_rest
+    - encryption_in_transit
+    - centralized_audit_logging
+    - real_time_fraud_detection
+    - compliance_dashboard
+
+infrastructure_requirements:
+  organization:
+    type: aws_organizations
+    accounts:
+      - production
+      - development
+      - security_logging
+      - shared_services
+    service_control_policies:
+      - deny_root_user_actions
+      - restrict_non_singapore_regions
+      - enforce_encryption
+
+  networking:
+    vpc:
+      cidr: 10.0.0.0/16
+      availability_zones: 2
+    subnets:
+      public:
+        per_az: true
+        resources:
+          - application_load_balancer
+          - nat_gateway
+      private_application:
+        per_az: true
+        resources:
+          - ecs_services
+          - lambda_functions
+          - step_functions
+      private_data:
+        per_az: true
+        resources:
+          - aurora_postgresql
+          - elasticache_redis
+    gateways:
+      - internet_gateway
+      - nat_gateway_per_az
+    vpc_endpoints:
+      gateway:
+        - s3
+        - dynamodb
+      interface:
+        - secrets_manager
+        - sqs
+        - sns
+        - kms
+        - cloudwatch_logs
+    security_groups:
+      - alb_sg
+      - ecs_sg
+      - rds_sg
+      - redis_sg
+
+  edge_and_access:
+    dns: route53
+    cdn: cloudfront
+    waf:
+      - owasp_managed_rules
+      - rate_limiting
+      - geo_restrictions_optional
+    ddos_protection: shield_advanced
+    tls_minimum: TLS1.2
+
+  identity_and_security:
+    authentication:
+      service: cognito
+      method: jwt
+    authorization:
+      service: iam
+      model:
+        - least_privilege
+        - no_wildcard_policies
+        - short_lived_sessions
+    service_roles:
+      - ecs_task_role
+      - lambda_execution_role
+      - step_functions_role
+    kms:
+      customer_managed_keys:
+        - transaction_data_key
+        - pii_data_key
+        - logs_key
+      rotation: enabled
+
+  data_layer:
+    aurora_postgresql:
+      usage:
+        - account_service
+        - payment_service
+      multi_az: true
+      encryption: kms_customer_managed
+    dynamodb_ledger:
+      usage:
+        - ledger_lambda
+        - statement_service
+      properties:
+        - append_only
+        - immutable_records
+        - point_in_time_recovery
+    elasticache_redis:
+      usage:
+        - caching
+      encryption_at_rest: true
+      encryption_in_transit: true
+    s3:
+      buckets:
+        - statements_bucket
+        - centralized_logs_bucket
+        - compliance_data_bucket
+      encryption: sse_kms
+      object_lock_for_logs: true
+
+  observability_and_governance:
+    monitoring:
+      - cloudwatch
+    auditing:
+      - cloudtrail
+    threat_detection:
+      - guardduty
+    governance:
+      - aws_config
+      - security_hub
+      - iam_access_analyzer
+
+development_requirements:
+  compute:
+    containers: ecs_fargate
+    serverless: lambda
+    orchestrator: step_functions
+
+  microservices:
+    account_service:
+      responsibilities:
+        - create_account
+        - retrieve_account
+        - validate_account
+        - debit_balance
+        - credit_balance
+      endpoints:
+        - GET /accounts/{userId}
+        - POST /accounts
+        - POST /accounts/debit
+        - POST /accounts/credit
+      dependencies:
+        - aurora_postgresql
+
+    payment_service:
+      responsibilities:
+        - initiate_transaction
+        - update_transaction_status
+        - publish_payment_events
+      endpoints:
+        - POST /payments/p2p
+        - POST /payments/merchant
+        - GET /payments/{id}
+      dependencies:
+        - aurora_postgresql
+        - eventbridge
+
+    statement_service:
+      responsibilities:
+        - fetch_transaction_history
+        - generate_statement
+      endpoints:
+        - GET /statements/{accountId}
+        - GET /statements/{accountId}?from=&to=
+      dependencies:
+        - dynamodb_ledger
+
+    ledger_service:
+      responsibilities:
+        - fetch_ledger_records
+      endpoints:
+        - GET /ledgers/{accountId}
+        - GET /ledgers/{accountId}?from=&to=
+      dependencies:
+        - dynamodb_ledger       
+
+  lambdas:
+    fraud_detection_lambda:
+      trigger: step_functions
+      outputs:
+        - APPROVE
+        - FLAG
+        - BLOCK
+      logic: rule_based_mock
+
+    notification_lambda:
+      trigger: eventbridge
+      responsibilities:
+        - send_email
+        - send_sms_mock
+
+    compliance_lambda:
+      trigger: eventbridge
+      responsibilities:
+        - aggregate_metrics
+        - track_fraud_cases
+        - track_failed_transactions
+      storage:
+        - dynamodb
+        - s3
+
+    ledger_lambda:
+      trigger: eventbridge
+      responsibilities:
+        - append_transaction_record
+        - ensure_immutability
+      storage:
+        - dynamodb
+
+  workflows:
+    payment_workflow:
+      orchestrator: step_functions
+      flow:
+        - validate_accounts_via_account_service
+        - create_transaction_pending_via_payment_service
+        - fraud_check_via_fraud_detection_lambda
+        - decision_branch:
+            APPROVE:
+              - debit_credit_accounts_via_account_service
+              - update_transaction_success_via_payment_service
+            FLAG:
+              - send_to_manual_review_queue
+            BLOCK:
+              - update_transaction_failed_via_payment_service
+
+  eventing_and_messaging:
+    event_bus: eventbridge
+    producers:
+      - payment_service
+      - fraud_detection_lambda
+    consumers:
+      - ledger_lambda
+      - notification_lambda
+      - compliance_lambda
+    events:
+      - PaymentInitiated
+      - PaymentCompleted
+      - PaymentFailed
+      - FraudFlagged
+    sqs:
+      purpose: manual_review_queue
+      consumer: compliance_team_manual
+
+deployment_requirements:
+  infrastructure_as_code:
+    tool: terraform
+    state_backend: s3_with_dynamodb_lock
+  container_registry:
+    service: ecr
+  local_development:
+    preferred_runtime: localstack
+    localstack_supported:
+      - lambda
+      - s3
+      - dynamodb
+      - sqs
+      - eventbridge
+      - step_functions
+    mock_or_stub_when_localstack_limited:
+      - cognito
+      - aurora_postgresql
+      - amazon_fraud_detector
+
+delivery_guidance:
+  current_phase: infrastructure_first
+  sequencing:
+    - provision_network_security_data_foundation
+    - provision_orchestration_and_eventing_baseline
+    - wire_lambda_and_service_integrations
+    - replace_scaffolding_with_service_artifacts
+  notes:
+    - ledger_is_lambda_plus_dynamodb_not_standalone_service
+    - statement_service_reads_ledger_for_audit_consistency
+    - do_not_deploy_outside_ap_southeast_1

@@ -1,0 +1,91 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: sbcbank-postgres
+    environment:
+      POSTGRES_DB: sbcbank
+      POSTGRES_USER: sbcbank
+      POSTGRES_PASSWORD: localpassword
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sbcbank -d sbcbank"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: sbcbank-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  account-service:
+    build:
+      context: .
+      dockerfile: account_service/Dockerfile
+    image: sbcbank/account-service:local
+    env_file:
+      - .env.runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8001:8000"
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: payment_service/Dockerfile
+    image: sbcbank/payment-service:local
+    env_file:
+      - .env.runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8002:8000"
+
+  ledger-service:
+    build:
+      context: .
+      dockerfile: ledger_service/Dockerfile
+    image: sbcbank/ledger-service:local
+    env_file:
+      - .env.runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8003:8000"
+
+  statement-service:
+    build:
+      context: .
+      dockerfile: statement_service/Dockerfile
+    image: sbcbank/statement-service:local
+    env_file:
+      - .env.runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8004:8000"
+
+volumes:
+  postgres_data:

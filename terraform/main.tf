@@ -7,8 +7,13 @@
 ##############################################################################
 
 locals {
-  prefix = "${var.project_name}-${var.environment}"
-  azs    = slice(data.aws_availability_zones.available.names, 0, 2)
+  prefix           = "${var.project_name}-${var.environment}"
+  azs              = slice(data.aws_availability_zones.available.names, 0, 2)
+  enable_alb_https = length(trimspace(var.alb_domain_name)) > 0
+  lambda_sources = {
+    notification = "${path.module}/../lambdas/notification_lambda.py"
+    fraud        = "${path.module}/../lambdas/fraud_lambda.py"
+  }
 }
 
 data "aws_availability_zones" "available" {
@@ -16,6 +21,8 @@ data "aws_availability_zones" "available" {
 }
 
 data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Networking
@@ -210,6 +217,50 @@ resource "aws_lb" "main" {
   tags = { Name = "${local.prefix}-alb" }
 }
 
+resource "aws_wafv2_web_acl" "alb" {
+  name  = "${local.prefix}-alb-web-acl"
+  scope = "REGIONAL"
+
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 10
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesCommonRuleSet"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.prefix}-waf-common"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${local.prefix}-alb-web-acl"
+    sampled_requests_enabled   = true
+  }
+
+  tags = { Name = "${local.prefix}-alb-web-acl" }
+}
+
+resource "aws_wafv2_web_acl_association" "alb" {
+  resource_arn = aws_lb.main.arn
+  web_acl_arn  = aws_wafv2_web_acl.alb.arn
+}
+
 resource "aws_lb_target_group" "default" {
   name        = "${local.prefix}-default-tg"
   port        = 80
@@ -225,12 +276,53 @@ resource "aws_lb_target_group" "default" {
   }
 }
 
+resource "aws_acm_certificate" "alb" {
+  count             = local.enable_alb_https ? 1 : 0
+  domain_name       = var.alb_domain_name
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = { Name = "${local.prefix}-alb-cert" }
+}
+
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
 
-  # TODO: Replace with HTTPS listener once an ACM certificate is provisioned.
+  dynamic "default_action" {
+    for_each = local.enable_alb_https ? [1] : []
+    content {
+      type = "redirect"
+
+      redirect {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
+    }
+  }
+
+  dynamic "default_action" {
+    for_each = local.enable_alb_https ? [] : [1]
+    content {
+      type             = "forward"
+      target_group_arn = aws_lb_target_group.default.arn
+    }
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  count             = local.enable_alb_https ? 1 : 0
+  load_balancer_arn = aws_lb.main.arn
+  port              = 443
+  protocol          = "HTTPS"
+  certificate_arn   = aws_acm_certificate.alb[0].arn
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.default.arn
@@ -260,7 +352,7 @@ resource "aws_lb_target_group" "microservice" {
 resource "aws_lb_listener_rule" "microservice" {
   for_each = local.microservice_route_priorities
 
-  listener_arn = aws_lb_listener.http.arn
+  listener_arn = local.enable_alb_https ? aws_lb_listener.https[0].arn : aws_lb_listener.http.arn
   priority     = each.value
 
   action {
@@ -379,6 +471,7 @@ resource "aws_elasticache_cluster" "redis" {
 resource "aws_sqs_queue" "transactions_dlq" {
   name                      = "${local.prefix}-transactions-dlq"
   message_retention_seconds = 1209600 # 14 days
+  sqs_managed_sse_enabled   = true
   tags                      = { Name = "${local.prefix}-transactions-dlq" }
 }
 
@@ -386,6 +479,7 @@ resource "aws_sqs_queue" "transactions" {
   name                       = "${local.prefix}-transactions"
   visibility_timeout_seconds = 30
   message_retention_seconds  = 86400 # 1 day
+  sqs_managed_sse_enabled    = true
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.transactions_dlq.arn
@@ -398,6 +492,7 @@ resource "aws_sqs_queue" "transactions" {
 resource "aws_sqs_queue" "notifications_dlq" {
   name                      = "${local.prefix}-notifications-dlq"
   message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
   tags                      = { Name = "${local.prefix}-notifications-dlq" }
 }
 
@@ -405,6 +500,7 @@ resource "aws_sqs_queue" "notifications" {
   name                       = "${local.prefix}-notifications"
   visibility_timeout_seconds = 30
   message_retention_seconds  = 86400
+  sqs_managed_sse_enabled    = true
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.notifications_dlq.arn
@@ -421,6 +517,16 @@ resource "aws_sqs_queue" "notifications" {
 resource "aws_s3_bucket" "frontend" {
   bucket = "${local.prefix}-frontend-${data.aws_caller_identity.current.account_id}"
   tags   = { Name = "${local.prefix}-frontend" }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "frontend" {
+  bucket = aws_s3_bucket.frontend.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "frontend" {
@@ -498,20 +604,37 @@ resource "aws_s3_bucket_policy" "frontend" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid    = "AllowCloudFrontOAC"
-      Effect = "Allow"
-      Principal = {
-        Service = "cloudfront.amazonaws.com"
-      }
-      Action   = "s3:GetObject"
-      Resource = "${aws_s3_bucket.frontend.arn}/*"
-      Condition = {
-        StringEquals = {
-          "AWS:SourceArn" = aws_cloudfront_distribution.frontend.arn
+    Statement = [
+      {
+        Sid    = "AllowCloudFrontOAC"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudfront.amazonaws.com"
+        }
+        Action   = "s3:GetObject"
+        Resource = "${aws_s3_bucket.frontend.arn}/*"
+        Condition = {
+          StringEquals = {
+            "AWS:SourceArn" = aws_cloudfront_distribution.frontend.arn
+          }
+        }
+      },
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.frontend.arn,
+          "${aws_s3_bucket.frontend.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
         }
       }
-    }]
+    ]
   })
 }
 
@@ -541,6 +664,19 @@ resource "aws_apigatewayv2_stage" "default" {
   tags = { Name = "${local.prefix}-api-stage" }
 }
 
+resource "aws_apigatewayv2_authorizer" "cognito_jwt" {
+  api_id                            = aws_apigatewayv2_api.main.id
+  authorizer_type                   = "JWT"
+  identity_sources                  = ["$request.header.Authorization"]
+  name                              = "${local.prefix}-cognito-jwt"
+  authorizer_payload_format_version = "2.0"
+
+  jwt_configuration {
+    audience = [aws_cognito_user_pool_client.web.id]
+    issuer   = "https://cognito-idp.${data.aws_region.current.name}.amazonaws.com/${aws_cognito_user_pool.main.id}"
+  }
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CloudWatch Log Group – centralised application logging
 # ─────────────────────────────────────────────────────────────────────────────
@@ -549,6 +685,53 @@ resource "aws_cloudwatch_log_group" "app" {
   name              = "/sbcbank/${var.environment}/app"
   retention_in_days = 30
   tags              = { Name = "${local.prefix}-log-group" }
+}
+
+resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
+  name              = "/aws/vpc/${local.prefix}/flow-logs"
+  retention_in_days = 30
+  tags              = { Name = "${local.prefix}-vpc-flow-logs" }
+}
+
+resource "aws_iam_role" "vpc_flow_logs" {
+  name = "${local.prefix}-vpc-flow-logs-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "vpc-flow-logs.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "vpc_flow_logs" {
+  name = "${local.prefix}-vpc-flow-logs-policy"
+  role = aws_iam_role.vpc_flow_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams"
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_flow_log" "vpc" {
+  iam_role_arn         = aws_iam_role.vpc_flow_logs.arn
+  log_destination      = aws_cloudwatch_log_group.vpc_flow_logs.arn
+  log_destination_type = "cloud-watch-logs"
+  traffic_type         = "ALL"
+  vpc_id               = aws_vpc.main.id
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -613,15 +796,31 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+data "archive_file" "lambda_package" {
+  for_each    = local.lambda_sources
+  type        = "zip"
+  source_file = each.value
+  output_path = "${path.module}/../lambdas/${each.key}_lambda.zip"
+}
+
+resource "aws_s3_object" "lambda_package" {
+  for_each = data.archive_file.lambda_package
+
+  bucket = aws_s3_bucket.lambda_artifacts.id
+  key    = "lambda/${each.key}.zip"
+  source = each.value.output_path
+  etag   = filemd5(each.value.output_path)
+}
+
 resource "aws_lambda_function" "notification" {
   function_name = "${local.prefix}-notification-lambda"
   role          = aws_iam_role.lambda_execution.arn
   runtime       = var.lambda_runtime
   handler       = var.notification_lambda_handler
 
-  # TODO: Replace with real Lambda artifact packaging/upload.
-  s3_bucket = aws_s3_bucket.frontend.bucket
-  s3_key    = var.notification_lambda_s3_key
+  s3_bucket        = aws_s3_bucket.lambda_artifacts.id
+  s3_key           = aws_s3_object.lambda_package["notification"].key
+  source_code_hash = data.archive_file.lambda_package["notification"].output_base64sha256
 
   tags = { Name = "${local.prefix}-notification-lambda" }
 }
@@ -632,9 +831,9 @@ resource "aws_lambda_function" "fraud" {
   runtime       = var.lambda_runtime
   handler       = var.fraud_lambda_handler
 
-  # TODO: Replace with real Lambda artifact packaging/upload.
-  s3_bucket = aws_s3_bucket.frontend.bucket
-  s3_key    = var.fraud_lambda_s3_key
+  s3_bucket        = aws_s3_bucket.lambda_artifacts.id
+  s3_key           = aws_s3_object.lambda_package["fraud"].key
+  source_code_hash = data.archive_file.lambda_package["fraud"].output_base64sha256
 
   tags = { Name = "${local.prefix}-fraud-lambda" }
 }
@@ -646,6 +845,11 @@ resource "aws_lambda_function" "fraud" {
 resource "aws_cloudwatch_event_bus" "main" {
   name = "${local.prefix}-${var.eventbridge_bus_name}"
   tags = { Name = "${local.prefix}-event-bus" }
+}
+
+resource "aws_cloudwatch_event_bus" "notifications" {
+  name = "notifications"
+  tags = { Name = "${local.prefix}-notifications-bus" }
 }
 
 resource "aws_cloudwatch_event_rule" "notifications" {
@@ -799,6 +1003,47 @@ resource "aws_s3_bucket" "statements" {
   tags   = { Name = "${local.prefix}-statements" }
 }
 
+resource "aws_s3_bucket" "lambda_artifacts" {
+  bucket = "${local.prefix}-lambda-artifacts-${data.aws_caller_identity.current.account_id}"
+  tags   = { Name = "${local.prefix}-lambda-artifacts" }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "lambda_artifacts" {
+  bucket = aws_s3_bucket.lambda_artifacts.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "lambda_artifacts" {
+  bucket                  = aws_s3_bucket.lambda_artifacts.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "lambda_artifacts" {
+  bucket = aws_s3_bucket.lambda_artifacts.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "statements" {
+  bucket = aws_s3_bucket.statements.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
 resource "aws_s3_bucket_public_access_block" "statements" {
   bucket                  = aws_s3_bucket.statements.id
   block_public_acls       = true
@@ -812,5 +1057,144 @@ resource "aws_s3_bucket_versioning" "statements" {
 
   versioning_configuration {
     status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_policy" "statements" {
+  bucket = aws_s3_bucket.statements.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyInsecureTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource = [
+        aws_s3_bucket.statements.arn,
+        "${aws_s3_bucket.statements.arn}/*"
+      ]
+      Condition = {
+        Bool = {
+          "aws:SecureTransport" = "false"
+        }
+      }
+    }]
+  })
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CloudTrail – account-level audit logging
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_s3_bucket" "cloudtrail" {
+  bucket = "${local.prefix}-cloudtrail-${data.aws_caller_identity.current.account_id}"
+  tags   = { Name = "${local.prefix}-cloudtrail" }
+}
+
+resource "aws_s3_bucket_public_access_block" "cloudtrail" {
+  bucket                  = aws_s3_bucket.cloudtrail.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_policy" "cloudtrail" {
+  bucket = aws_s3_bucket.cloudtrail.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AWSCloudTrailAclCheck"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "s3:GetBucketAcl"
+        Resource = aws_s3_bucket.cloudtrail.arn
+      },
+      {
+        Sid    = "AWSCloudTrailWrite"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.cloudtrail.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*"
+        Condition = {
+          StringEquals = {
+            "s3:x-amz-acl" = "bucket-owner-full-control"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_cloudtrail" "main" {
+  name                          = "${local.prefix}-trail"
+  s3_bucket_name                = aws_s3_bucket.cloudtrail.id
+  include_global_service_events = true
+  is_multi_region_trail         = true
+  enable_log_file_validation    = true
+
+  depends_on = [aws_s3_bucket_policy.cloudtrail]
+
+  tags = { Name = "${local.prefix}-trail" }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CloudWatch Alarms – baseline operational alerts
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
+  alarm_name          = "${local.prefix}-alb-5xx-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_ELB_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 10
+  alarm_description   = "Alarm when ALB returns too many 5xx responses"
+
+  dimensions = {
+    LoadBalancer = aws_lb.main.arn_suffix
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
+  alarm_name          = "${local.prefix}-rds-high-cpu"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 80
+  alarm_description   = "Alarm when RDS CPU utilization is persistently high"
+
+  dimensions = {
+    DBInstanceIdentifier = aws_db_instance.main.id
   }
 }
