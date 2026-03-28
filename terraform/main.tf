@@ -960,7 +960,7 @@ resource "aws_sfn_state_machine" "payment_workflow" {
       CreatePendingTransaction = {
         Type = "Pass"
         Parameters = {
-          "payment.$" = "$.validated"
+          "payment.$"       = "$.validated"
           transactionStatus = "PENDING"
         }
         Next = "PublishPaymentInitiated"
@@ -974,7 +974,7 @@ resource "aws_sfn_state_machine" "payment_workflow" {
               Source       = "sbcbank.transactions"
               DetailType   = "PaymentInitiated"
               EventBusName = aws_cloudwatch_event_bus.main.name
-              "Detail.$"  = "States.JsonToString($.payment)"
+              "Detail.$"   = "States.JsonToString($.payment)"
             }
           ]
         }
@@ -991,8 +991,8 @@ resource "aws_sfn_state_machine" "payment_workflow" {
           }
         }
         ResultSelector = {
-          "decision.$"   = "States.StringToJson($.Payload.body).decision"
-          "riskScore.$"  = "States.StringToJson($.Payload.body).riskScore"
+          "decision.$"    = "States.StringToJson($.Payload.body).decision"
+          "riskScore.$"   = "States.StringToJson($.Payload.body).riskScore"
           "evaluatedAt.$" = "States.StringToJson($.Payload.body).evaluatedAt"
         }
         ResultPath = "$.fraud"
@@ -1041,7 +1041,7 @@ resource "aws_sfn_state_machine" "payment_workflow" {
               Source       = "sbcbank.transactions"
               DetailType   = "PaymentCompleted"
               EventBusName = aws_cloudwatch_event_bus.main.name
-              "Detail.$"  = "States.JsonToString($.payment)"
+              "Detail.$"   = "States.JsonToString($.payment)"
             }
           ]
         }
@@ -1052,7 +1052,7 @@ resource "aws_sfn_state_machine" "payment_workflow" {
         Type     = "Task"
         Resource = "arn:aws:states:::aws-sdk:sqs:sendMessage"
         Parameters = {
-          QueueUrl = aws_sqs_queue.manual_review.url
+          QueueUrl        = aws_sqs_queue.manual_review.url
           "MessageBody.$" = "States.JsonToString($)"
         }
         ResultPath = "$.manualReviewResult"
@@ -1067,7 +1067,7 @@ resource "aws_sfn_state_machine" "payment_workflow" {
               Source       = "sbcbank.fraud"
               DetailType   = "FraudFlagged"
               EventBusName = aws_cloudwatch_event_bus.main.name
-              "Detail.$"  = "States.JsonToString($)"
+              "Detail.$"   = "States.JsonToString($)"
             }
           ]
         }
@@ -1092,7 +1092,7 @@ resource "aws_sfn_state_machine" "payment_workflow" {
               Source       = "sbcbank.transactions"
               DetailType   = "PaymentFailed"
               EventBusName = aws_cloudwatch_event_bus.main.name
-              "Detail.$"  = "States.JsonToString($)"
+              "Detail.$"   = "States.JsonToString($)"
             }
           ]
         }
