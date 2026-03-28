@@ -26,6 +26,7 @@ import models.account  # noqa: F401
 import models.payment  # noqa: F401
 import models.ledger  # noqa: F401
 import models.statement  # noqa: F401
+from config.auth import INTERNAL_SERVICE_TOKEN, issue_access_token
 
 
 def _service_client(service_module, service_app, service_get_db) -> Generator:
@@ -75,3 +76,27 @@ def ledger_client():
 @pytest.fixture()
 def statement_client():
     yield from _service_client(statement_main, statement_main.app, statement_main.get_db)
+
+
+@pytest.fixture()
+def admin_headers():
+    token = issue_access_token(subject="admin", role="admin")
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture()
+def user_headers_factory():
+    def _create(account_id: int, subject: str | None = None):
+        token = issue_access_token(
+            subject=subject or f"user-{account_id}",
+            role="user",
+            account_id=account_id,
+        )
+        return {"Authorization": f"Bearer {token}"}
+
+    return _create
+
+
+@pytest.fixture()
+def internal_headers():
+    return {"X-Internal-Token": INTERNAL_SERVICE_TOKEN}

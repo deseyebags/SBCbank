@@ -1,6 +1,6 @@
-# SBCbank Infrastructure Routing Overview
+# SBCbank Local Routing Overview
 
-This document illustrates the routing flow through the SBCbank cloud-native infrastructure as defined in the Terraform configuration.
+This document describes the active Docker-first routing flow for local development.
 
 ---
 
@@ -8,71 +8,78 @@ This document illustrates the routing flow through the SBCbank cloud-native infr
 
 ```mermaid
 graph TD
-    Internet((Internet))
-    CloudFront[CloudFront CDN]
-    S3[S3 (Frontend SPA)]
-    APIGW[API Gateway (HTTP API)]
-    ALB[Application Load Balancer]
-    ECS[ECS Fargate (Microservices)]
-    RDS[(RDS PostgreSQL)]
-    Redis[(ElastiCache Redis)]
-    SQS[SQS Queues]
+    Browser((Browser))
+    Frontend[Frontend Container]
+    Proxy[Reverse Proxy]
+    Account[account-service]
+    Payment[payment-service]
+    Orchestrator[orchestrator-service]
+    Ledger[ledger-service]
+    Statement[statement-service]
+    Postgres[(PostgreSQL)]
+    Redis[(Redis)]
 
-    Internet -->|HTTPS| CloudFront
-    CloudFront -->|OAC| S3
-    CloudFront -->|HTTPS| APIGW
-    APIGW -->|HTTP| ALB
-    ALB -->|HTTP| ECS
-    ECS -->|TCP 5432| RDS
-    ECS -->|TCP 6379| Redis
-    ECS -->|SQS API| SQS
+    Browser -->|HTTP| Frontend
+    Frontend -->|/api/*| Proxy
+    Proxy -->|/api/accounts| Account
+    Proxy -->|/api/payments| Payment
+    Proxy -->|/api/ledger| Ledger
+    Proxy -->|/api/statements| Statement
+
+    Payment -->|internal workflow call| Orchestrator
+    Orchestrator -->|validate/debit/credit| Account
+    Orchestrator -->|append entries| Ledger
+
+    Account --> Postgres
+    Payment --> Postgres
+    Orchestrator --> Postgres
+    Ledger --> Postgres
+    Statement --> Postgres
+
+    Account --> Redis
+    Payment --> Redis
+    Ledger --> Redis
+    Statement --> Redis
 ```
 
 ---
 
 ## Routing Pathways
 
-### 1. Frontend (SPA)
+### 1. Frontend Requests
 
-- **User → CloudFront → S3**
-  - Static assets are served from S3 via CloudFront with Origin Access Control (OAC).
+- **Browser -> Frontend Container**
+  - Frontend is served locally and uses proxy-backed `/api` paths.
 
 ### 2. API Requests
 
-- **User → CloudFront → API Gateway → ALB → ECS (Microservices)**
-  - API Gateway receives HTTP(S) requests, forwards to ALB, which routes to ECS tasks running microservices.
+- **Browser -> Frontend -> Reverse Proxy -> Backend Service**
+  - Proxy routes requests to account, payment, ledger, and statement services.
 
-### 3. Database & Caching
+### 3. Orchestration Flow
 
-- **ECS → RDS PostgreSQL**
-  - ECS tasks in private subnets connect to RDS (also private) for data storage.
-- **ECS → ElastiCache Redis**
-  - ECS tasks use Redis for caching/session storage.
+- **Payment Service -> Orchestrator Service -> Account/Ledger Services**
+  - Payment initiation delegates workflow execution to orchestrator.
+  - Orchestrator coordinates account validation, debit/credit, and ledger write.
+  - Payment service updates response based on orchestration result.
 
-### 4. Messaging
+### 4. Database & Caching
 
-- **ECS ↔ SQS**
-  - Microservices communicate asynchronously via SQS queues (transactions, notifications).
-
----
-
-## Subnet & Security Group Summary
-
-- **Public Subnets:**
-  - Host ALB, NAT Gateways, and allow inbound internet traffic.
-- **Private Subnets:**
-  - Host ECS tasks, RDS, and Redis. No direct internet access; outbound via NAT.
-- **Security Groups:**
-  - Strictly control traffic: ALB → ECS → RDS/Redis, with no public access to databases.
+- **All services -> PostgreSQL**
+  - Shared relational store for domain and orchestration execution state.
+- **Optional cache path -> Redis**
+  - Redis remains available for cache/idempotency work.
 
 ---
 
-## Compliance Notes
+## Service Endpoints (Local)
 
-- All resources are deployed in `ap-southeast-1` for MAS compliance.
-- No public access to sensitive data stores.
-- Encryption and network isolation enforced throughout.
+- account-service: `http://localhost:8001`
+- payment-service: `http://localhost:8002`
+- ledger-service: `http://localhost:8003`
+- statement-service: `http://localhost:8004`
+- orchestrator-service: `http://localhost:8005`
 
 ---
 
-For more details, see the Terraform files and [bankinfo.yaml](../bankinfo.yaml).
+For detailed implementation sequencing, see `docker-first-implementation-plan.md`.

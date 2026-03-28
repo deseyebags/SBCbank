@@ -1,142 +1,122 @@
 # SBCbank
 
-Cloud-native bank web application – SMU IS458 Project (Team 2).
+Local-first banking microservice project for SMU IS458 (Team 2).
 
-This project is designed for rapid local development and testing using LocalStack, an open-source AWS cloud emulator. No real AWS account is required for local development.
+The active development path is Docker and Docker Compose only. Local runtime no longer depends on Terraform, AWS, or LocalStack.
 
 ---
 
 ## Table of Contents
 
-1. [Architecture Overview](#architecture-overview)
+1. [Current Runtime Architecture](#current-runtime-architecture)
 2. [Prerequisites](#prerequisites)
-3. [Repository Structure](#repository-structure)
-4. [Local Development with LocalStack](#local-development-with-localstack)
-5. [Deploying with Terraform](#deploying-with-terraform)
-6. [Tearing Down](#tearing-down)
-7. [Environment Variables Reference](#environment-variables-reference)
+3. [Quickstart](#quickstart)
+4. [Service Endpoints](#service-endpoints)
+5. [Repository Notes](#repository-notes)
+6. [Legacy Infrastructure Assets](#legacy-infrastructure-assets)
 
 ---
 
-## Architecture Overview
-
-SBCbank is designed as a set of cloud-native microservices hosted on AWS:
+## Current Runtime Architecture
 
 | Layer | Technology |
 |---|---|
-| Frontend | Single-page app served via **S3 + CloudFront** |
-| API Gateway | **AWS API Gateway v2** (HTTP API) |
-| Microservices | **Amazon ECS (Fargate)** containers behind an ALB |
-| Database | **Amazon RDS PostgreSQL 16** (private subnets) |
-| Cache / Sessions | **Amazon ElastiCache Redis 7** |
-| Async messaging | **Amazon SQS** (transactions & notifications queues) |
-| Logging | **Amazon CloudWatch Logs** |
-| Networking | VPC with public + private subnets across 2 AZs, NAT Gateways |
+| Frontend | React + shadcn (in progress) |
+| Backend APIs | FastAPI microservices |
+| Workflow Coordination | Internal orchestration service |
+| Database | PostgreSQL 16 (Docker container) |
+| Cache | Redis 7 (Docker container) |
+| Networking | Docker bridge network + container DNS |
 
-> **Note:** Service code (container images, Lambda packages, etc.) is not required yet. The Terraform template provisions the infrastructure scaffolding so services can be deployed incrementally.
+The frontend now uses route-based role experiences:
+
+- `/login`: authentication screen
+- `/admin`: admin operations workspace
+- `/app`: user workspace
+
+The orchestration service now coordinates payment workflow execution for local development.
 
 ---
 
+## Prerequisites
 
-## Local Development with LocalStack
+- Docker Desktop (or Docker Engine + Compose plugin)
+- Git
 
-This project is optimized for local development using LocalStack, which emulates AWS services on your machine. No real AWS account or credentials are required.
+---
 
-### 1. Prerequisites
+## Quickstart
 
-- [LocalStack](https://github.com/localstack/localstack)
-  - Install via Homebrew: `brew install localstack`
-- [Docker](https://www.docker.com/) (required for LocalStack)
-- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5.0
-- [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) >= 2.x
-
-### 2. Clone the repository
+1. Clone repository:
 
 ```bash
 git clone https://github.com/deseyebags/SBCbank.git
 cd SBCbank
 ```
 
-### 3. Start LocalStack
+2. Prepare backend runtime environment:
 
 ```bash
-localstack start
-# or, if using Docker Compose:
-# docker compose up localstack
+cp backend/.env.runtime.example backend/.env.runtime
 ```
 
-### 4. Set up mock AWS credentials
+Windows PowerShell alternative:
 
-Set these environment variables in your shell (these are safe for local use):
+```powershell
+Copy-Item backend\.env.runtime.example backend\.env.runtime
+```
+
+3. Start backend stack:
 
 ```bash
-export AWS_ACCESS_KEY_ID=test
-export AWS_SECRET_ACCESS_KEY=test
-export AWS_DEFAULT_REGION=ap-southeast-1
-export LOCALSTACK_HOST=localhost
+cd backend
+docker compose up --build -d
 ```
 
-```Powershell
-$env:AWS_ACCESS_KEY_ID="test"
-$env:AWS_SECRET_ACCESS_KEY="test"
-$env:AWS_DEFAULT_REGION="ap-southeast-1"
-$env:LOCALSTACK_HOST="localhost"
-```
-
-### 5. Deploy infrastructure with Terraform
+4. Stop backend stack:
 
 ```bash
-cd terraform
-terraform init
-terraform apply -var-file="localstack.tfvars" -var="db_password=localpassword"
+cd backend
+docker compose down
 ```
 
-> **Note:**
-> - The `localstack.tfvars` file configures Terraform to use LocalStack endpoints and disables the remote backend.
-> - All resources are created locally and are accessible via LocalStack at `localhost:4566`.
-> - Not all AWS services are fully emulated, but core services (VPC, S3, SQS, RDS, ECS, etc.) are supported.
+5. Start frontend development server:
 
-### 6. Accessing LocalStack Resources
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-- S3: http://localhost:4566
-- SQS: http://localhost:4566/000000000000/queue-name
-- RDS: Use the endpoint output by Terraform (may require additional configuration)
+6. Sign in through the frontend at `http://localhost:5173/login`:
 
-See the [LocalStack documentation](https://docs.localstack.cloud/) for more details.
+- Admin: `admin` / `admin123`
+- User: account ID + matching account email
 
 ---
 
+## Service Endpoints
 
-## Deploying with Terraform (Cloud Option)
-
-If you wish to deploy to real AWS, uncomment the backend block in `terraform/providers.tf` and provide real AWS credentials. This is not required for local development.
-
----
-
-
-## Tearing Down
-
-To remove all local resources:
-
-```bash
-cd terraform
-terraform destroy -var-file=localstack.tfvars -var="db_password=localpassword"
-```
+- Account service: http://localhost:8001/accounts
+- Auth endpoints: http://localhost:8001/auth/login/admin and http://localhost:8001/auth/login/user
+- Payment service: http://localhost:8002/payments
+- Ledger service: http://localhost:8003/ledger
+- Statement service: http://localhost:8004/statements
+- Orchestrator service (internal API): http://localhost:8005/internal/orchestrations/payments
+- Notification service: http://localhost:8006/health
+- RabbitMQ management UI: http://localhost:15672 (sbcbank / sbcbank)
 
 ---
 
+## Repository Notes
 
-## Environment Variables Reference
+- Current execution plan is tracked in `docker-first-implementation-plan.md`.
+- Payment orchestration is synchronous for MVP and internal-only.
+- Fraud detection and manual-review workflow are intentionally out of scope in this cycle.
 
-| Variable | Description | Default |
-|---|---|---|
-| `TF_VAR_project_name` | Resource name prefix | `sbcbank` |
-| `TF_VAR_environment` | Target environment (`dev`/`staging`/`prod`) | `dev` |
-| `TF_VAR_aws_region` | AWS region | `ap-southeast-1` |
-| `TF_VAR_vpc_cidr` | VPC CIDR block | `10.0.0.0/16` |
-| `TF_VAR_db_instance_class` | RDS instance type | `db.t3.micro` |
-| `TF_VAR_db_password` | RDS master password (**required**) | – |
-| `TF_VAR_redis_node_type` | ElastiCache node type | `cache.t3.micro` |
-| `AWS_ACCESS_KEY_ID` | AWS access key (use `test` for LocalStack) | `test` |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key (use `test` for LocalStack) | `test` |
-| `AWS_DEFAULT_REGION` | AWS region (CLI default) | `ap-southeast-1` |
+---
+
+## Legacy Infrastructure Assets
+
+Terraform and AWS-oriented files remain in the repository for historical/reference use, but are not part of the active local run path.
+

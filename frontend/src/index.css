@@ -1,0 +1,66 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Sora:wght@400;600;700;800&display=swap");
+@import "tailwindcss";
+
+:root {
+  --font-display: "Sora", sans-serif;
+  --font-body: "Sora", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+
+  --bg-0: #f7fbfc;
+  --bg-1: #eef5f8;
+  --surface-1: #ffffff;
+  --surface-2: #f6fafc;
+  --surface-3: #edf4f9;
+
+  --text-0: #0d2538;
+  --text-1: #1f4a67;
+  --text-2: #567289;
+
+  --border-1: #d5e4ee;
+
+  --brand-100: #d8f4ff;
+  --brand-400: #37a8d8;
+  --brand-500: #0d8ec5;
+  --brand-600: #0a79a8;
+  --brand-700: #06638d;
+
+  --accent-500: #f58e2f;
+  --accent-600: #e07d21;
+  --accent-700: #c96714;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  color: var(--text-0);
+  font-family: var(--font-body);
+  background:
+    radial-gradient(1000px 500px at 0% 0%, rgba(7, 142, 197, 0.15), transparent 65%),
+    radial-gradient(900px 400px at 100% 0%, rgba(245, 142, 47, 0.16), transparent 60%),
+    linear-gradient(180deg, var(--bg-0), var(--bg-1));
+}
+
+#root {
+  min-height: 100svh;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+}
+
+code,
+kbd,
+pre {
+  font-family: var(--font-mono);
+}
+
+.font-display {
+  font-family: var(--font-display);
+}

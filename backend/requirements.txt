@@ -1,5 +1,7 @@
 fastapi
 uvicorn
+requests
+pika
 psycopg2-binary
 redis
 python-dotenv
@@ -7,5 +9,3 @@ sqlalchemy
 alembic
 pytest
 httpx
-localstack-client
-boto3

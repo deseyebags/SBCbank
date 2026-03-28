@@ -1,85 +1,70 @@
 import payment_service.main as payment_main
 
 
-class _MockEventsClient:
-    def __init__(self):
-        self.entries = None
+class _MockResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
 
-    def put_events(self, Entries):
-        self.entries = Entries
-        return {"FailedEntryCount": 0}
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError("HTTP error")
 
-
-class _MockStepFunctionsClient:
-    def start_execution(self, stateMachineArn, input):
-        return {"executionArn": f"{stateMachineArn}:execution:unit-test"}
-
-
-class _MockSqsClient:
-    def __init__(self):
-        self.last_message = None
-
-    def send_message(self, QueueUrl, MessageBody):
-        self.last_message = {"QueueUrl": QueueUrl, "MessageBody": MessageBody}
-        return {"MessageId": "msg-1"}
+    def json(self):
+        return self._payload
 
 
-def test_create_payment_publishes_event(payment_client, monkeypatch):
-    mock_events = _MockEventsClient()
-
-    def _fake_client(service_name: str):
-        if service_name == "events":
-            return mock_events
-        raise AssertionError(f"Unexpected service: {service_name}")
-
-    monkeypatch.setattr(payment_main, "aws_client", _fake_client)
-
+def test_create_payment(payment_client, admin_headers):
     response = payment_client.post(
         "/payments",
         params={"account_id": 1, "amount": 12.5, "status": "PENDING"},
+        headers=admin_headers,
     )
 
     assert response.status_code == 200
     body = response.json()
     assert body["amount"] == 12.5
-    assert mock_events.entries is not None
-    assert mock_events.entries[0]["DetailType"] == "PaymentInitiated"
 
 
-def test_p2p_starts_step_function_execution(payment_client, monkeypatch):
-    mock_sf = _MockStepFunctionsClient()
+def test_p2p_delegates_to_orchestrator(payment_client, monkeypatch, user_headers_factory):
+    captured = {}
 
-    def _fake_client(service_name: str):
-        if service_name == "stepfunctions":
-            return mock_sf
-        raise AssertionError(f"Unexpected service: {service_name}")
+    def _fake_post(url, json, headers, timeout):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return _MockResponse(
+            {
+                "execution_id": json["execution_id"],
+                "workflow_status": "COMPLETED",
+                "payment_status": "SUCCESS",
+            }
+        )
 
-    monkeypatch.setattr(payment_main, "aws_client", _fake_client)
+    monkeypatch.setattr(payment_main.requests, "post", _fake_post)
 
     response = payment_client.post(
         "/payments/p2p",
         params={"account_id": 100, "recipient_id": 200, "amount": 50.0},
+        headers=user_headers_factory(100),
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "started"
-    assert "executionArn" in body
+    assert body["status"] == "SUCCESS"
+    assert body["workflow_status"] == "COMPLETED"
+    assert "execution_id" in body
+    assert captured["url"].endswith("/internal/orchestrations/payments")
+    assert captured["json"]["payer_account_id"] == 100
+    assert "X-Internal-Token" in captured["headers"]
 
 
-def test_manual_review_sends_sqs_message(payment_client, monkeypatch):
-    mock_sqs = _MockSqsClient()
+def test_user_cannot_create_p2p_for_other_account(payment_client, user_headers_factory):
+    response = payment_client.post(
+        "/payments/p2p",
+        params={"account_id": 999, "recipient_id": 200, "amount": 50.0},
+        headers=user_headers_factory(100),
+    )
 
-    def _fake_client(service_name: str):
-        if service_name == "sqs":
-            return mock_sqs
-        raise AssertionError(f"Unexpected service: {service_name}")
-
-    monkeypatch.setattr(payment_main, "aws_client", _fake_client)
-
-    response = payment_client.post("/payments/manual-review", params={"payment_id": 77})
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "queued"
-    assert mock_sqs.last_message is not None
+    assert response.status_code == 403
