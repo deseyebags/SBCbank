@@ -120,3 +120,30 @@ npm run dev
 
 Terraform and AWS-oriented files remain in the repository for historical/reference use, but are not part of the active local run path.
 
+### Terraform Commands (Legacy)
+
+For local Terraform development with LocalStack:
+
+```bash
+cd terraform
+terraform init -reconfigure
+terraform validate
+terraform plan -var-file="localstack.tfvars" -var="db_password=localpassword"
+terraform apply -var-file="localstack.tfvars" -var="db_password=localpassword"
+```
+
+To clean up LocalStack-provisioned Terraform resources:
+
+```bash
+cd terraform
+terraform destroy -var-file="localstack.tfvars" -var="db_password=localpassword"
+```
+
+For AWS-backed deployment (non-LocalStack), use environment-specific values and credentials:
+
+```bash
+cd terraform
+terraform init
+terraform apply -var="environment=dev" -var="db_password=<strong-password>"
+```
+
