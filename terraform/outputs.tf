@@ -60,6 +60,11 @@ output "notifications_queue_url" {
   value       = aws_sqs_queue.notifications.url
 }
 
+output "manual_review_queue_url" {
+  description = "URL of the manual review SQS queue for fraud-flagged payments."
+  value       = aws_sqs_queue.manual_review.url
+}
+
 output "cloudwatch_log_group" {
   description = "Name of the CloudWatch log group for application logs."
   value       = aws_cloudwatch_log_group.app.name
@@ -88,6 +93,11 @@ output "fraud_lambda_arn" {
 output "eventbridge_bus_name" {
   description = "Name of the EventBridge event bus."
   value       = aws_cloudwatch_event_bus.main.name
+}
+
+output "payment_workflow_state_machine_arn" {
+  description = "ARN of the Step Functions payment workflow state machine."
+  value       = aws_sfn_state_machine.payment_workflow.arn
 }
 
 output "fraud_detector_name" {

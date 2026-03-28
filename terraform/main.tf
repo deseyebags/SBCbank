@@ -510,6 +510,27 @@ resource "aws_sqs_queue" "notifications" {
   tags = { Name = "${local.prefix}-notifications" }
 }
 
+resource "aws_sqs_queue" "manual_review_dlq" {
+  name                      = "${local.prefix}-manual-review-dlq"
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
+  tags                      = { Name = "${local.prefix}-manual-review-dlq" }
+}
+
+resource "aws_sqs_queue" "manual_review" {
+  name                       = "${local.prefix}-manual-review"
+  visibility_timeout_seconds = 60
+  message_retention_seconds  = 1209600
+  sqs_managed_sse_enabled    = true
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.manual_review_dlq.arn
+    maxReceiveCount     = 5
+  })
+
+  tags = { Name = "${local.prefix}-manual-review" }
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # S3 – static frontend assets
 # ─────────────────────────────────────────────────────────────────────────────
@@ -836,6 +857,260 @@ resource "aws_lambda_function" "fraud" {
   source_code_hash = data.archive_file.lambda_package["fraud"].output_base64sha256
 
   tags = { Name = "${local.prefix}-fraud-lambda" }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step Functions – payment orchestration workflow
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_iam_role" "step_functions" {
+  name = "${local.prefix}-step-functions-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "states.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "step_functions" {
+  name = "${local.prefix}-step-functions-policy"
+  role = aws_iam_role.step_functions.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunction"
+        ]
+        Resource = [
+          aws_lambda_function.fraud.arn,
+          "${aws_lambda_function.fraud.arn}:*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "events:PutEvents"
+        ]
+        Resource = [
+          aws_cloudwatch_event_bus.main.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage"
+        ]
+        Resource = [
+          aws_sqs_queue.manual_review.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogDelivery",
+          "logs:GetLogDelivery",
+          "logs:UpdateLogDelivery",
+          "logs:DeleteLogDelivery",
+          "logs:ListLogDeliveries",
+          "logs:PutResourcePolicy",
+          "logs:DescribeResourcePolicies",
+          "logs:DescribeLogGroups"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "payment_workflow" {
+  name              = "/aws/states/${local.prefix}-payment-workflow"
+  retention_in_days = 30
+  tags              = { Name = "${local.prefix}-payment-workflow-logs" }
+}
+
+resource "aws_sfn_state_machine" "payment_workflow" {
+  name     = "${local.prefix}-payment-workflow"
+  role_arn = aws_iam_role.step_functions.arn
+
+  logging_configuration {
+    include_execution_data = true
+    level                  = "ALL"
+
+    log_destination = "${aws_cloudwatch_log_group.payment_workflow.arn}:*"
+  }
+
+  definition = jsonencode({
+    Comment = "SBCbank payment orchestration workflow"
+    StartAt = "ValidateAccounts"
+    States = {
+      ValidateAccounts = {
+        Type = "Pass"
+        Parameters = {
+          "validated.$" = "$.payment"
+        }
+        Next = "CreatePendingTransaction"
+      }
+      CreatePendingTransaction = {
+        Type = "Pass"
+        Parameters = {
+          "payment.$" = "$.validated"
+          transactionStatus = "PENDING"
+        }
+        Next = "PublishPaymentInitiated"
+      }
+      PublishPaymentInitiated = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::aws-sdk:events:putEvents"
+        Parameters = {
+          Entries = [
+            {
+              Source       = "sbcbank.transactions"
+              DetailType   = "PaymentInitiated"
+              EventBusName = aws_cloudwatch_event_bus.main.name
+              "Detail.$"  = "States.JsonToString($.payment)"
+            }
+          ]
+        }
+        ResultPath = "$.eventResult"
+        Next       = "FraudCheck"
+      }
+      FraudCheck = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.fraud.arn
+          Payload = {
+            "detail.$" = "$.payment"
+          }
+        }
+        ResultSelector = {
+          "decision.$"   = "States.StringToJson($.Payload.body).decision"
+          "riskScore.$"  = "States.StringToJson($.Payload.body).riskScore"
+          "evaluatedAt.$" = "States.StringToJson($.Payload.body).evaluatedAt"
+        }
+        ResultPath = "$.fraud"
+        Next       = "FraudDecision"
+      }
+      FraudDecision = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.fraud.decision"
+            StringEquals = "APPROVE"
+            Next         = "ApproveTransaction"
+          },
+          {
+            Variable     = "$.fraud.decision"
+            StringEquals = "FLAG"
+            Next         = "SendToManualReviewQueue"
+          },
+          {
+            Variable     = "$.fraud.decision"
+            StringEquals = "MANUAL_REVIEW"
+            Next         = "SendToManualReviewQueue"
+          },
+          {
+            Variable     = "$.fraud.decision"
+            StringEquals = "BLOCK"
+            Next         = "BlockTransaction"
+          }
+        ]
+        Default = "BlockTransaction"
+      }
+      ApproveTransaction = {
+        Type = "Pass"
+        Parameters = {
+          "payment.$" = "$.payment"
+          status      = "SUCCESS"
+        }
+        Next = "PublishPaymentCompleted"
+      }
+      PublishPaymentCompleted = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::aws-sdk:events:putEvents"
+        Parameters = {
+          Entries = [
+            {
+              Source       = "sbcbank.transactions"
+              DetailType   = "PaymentCompleted"
+              EventBusName = aws_cloudwatch_event_bus.main.name
+              "Detail.$"  = "States.JsonToString($.payment)"
+            }
+          ]
+        }
+        ResultPath = "$.eventResult"
+        End        = true
+      }
+      SendToManualReviewQueue = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::aws-sdk:sqs:sendMessage"
+        Parameters = {
+          QueueUrl = aws_sqs_queue.manual_review.url
+          "MessageBody.$" = "States.JsonToString($)"
+        }
+        ResultPath = "$.manualReviewResult"
+        Next       = "PublishFraudFlagged"
+      }
+      PublishFraudFlagged = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::aws-sdk:events:putEvents"
+        Parameters = {
+          Entries = [
+            {
+              Source       = "sbcbank.fraud"
+              DetailType   = "FraudFlagged"
+              EventBusName = aws_cloudwatch_event_bus.main.name
+              "Detail.$"  = "States.JsonToString($)"
+            }
+          ]
+        }
+        ResultPath = "$.eventResult"
+        End        = true
+      }
+      BlockTransaction = {
+        Type = "Pass"
+        Parameters = {
+          "payment.$" = "$.payment"
+          status      = "FAILED"
+          reason      = "FRAUD_BLOCKED"
+        }
+        Next = "PublishPaymentFailed"
+      }
+      PublishPaymentFailed = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::aws-sdk:events:putEvents"
+        Parameters = {
+          Entries = [
+            {
+              Source       = "sbcbank.transactions"
+              DetailType   = "PaymentFailed"
+              EventBusName = aws_cloudwatch_event_bus.main.name
+              "Detail.$"  = "States.JsonToString($)"
+            }
+          ]
+        }
+        ResultPath = "$.eventResult"
+        End        = true
+      }
+    }
+  })
+
+  tags = { Name = "${local.prefix}-payment-workflow" }
+}
+
+resource "aws_lambda_permission" "allow_stepfunctions_fraud" {
+  statement_id  = "AllowStepFunctionsInvokeFraudLambda"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.fraud.function_name
+  principal     = "states.amazonaws.com"
+  source_arn    = aws_sfn_state_machine.payment_workflow.arn
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

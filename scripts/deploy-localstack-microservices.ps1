@@ -59,7 +59,7 @@ $envContent = @(
 	"POSTGRES_DB=sbcbank",
 	"POSTGRES_USER=sbcbank",
 	"POSTGRES_PASSWORD=$DbPassword",
-	"DATABASE_URL=postgresql://sbcbank:$DbPassword@$postgresHost:$postgresPort/sbcbank",
+	"DATABASE_URL=postgresql://sbcbank:${DbPassword}@${postgresHost}:${postgresPort}/sbcbank"
 	"REDIS_HOST=$redisHost",
 	"REDIS_PORT=6379"
 )
