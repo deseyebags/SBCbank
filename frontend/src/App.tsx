@@ -39,6 +39,7 @@ import {
   listStatements,
   loginAdmin,
   loginUser,
+  signUpUser,
   setAuthToken,
   type Account,
   type AuthSession,
@@ -160,6 +161,8 @@ function LoginPage({
 
   const [userAccountId, setUserAccountId] = useState("");
   const [userEmail, setUserEmail] = useState("");
+  const [signUpName, setSignUpName] = useState("");
+  const [signUpEmail, setSignUpEmail] = useState("");
 
   if (session) {
     return <Navigate to={roleHome(session.role)} replace />;
@@ -203,6 +206,30 @@ function LoginPage({
       onLogin(authSession);
     } catch (error) {
       setAuthToken(null);
+      setNotice({ kind: "error", text: toErrorMessage(error) });
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleUserSignUp() {
+    if (!signUpName.trim() || !signUpEmail.trim()) {
+      setNotice({ kind: "error", text: "Provide name and email to sign up." });
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const account = await signUpUser(signUpName.trim(), signUpEmail.trim());
+      setSignUpName("");
+      setSignUpEmail("");
+      setUserAccountId(String(account.id));
+      setUserEmail(account.email);
+      setNotice({
+        kind: "success",
+        text: `Account created. Your account ID is ${account.id}. You can now sign in as user.`,
+      });
+    } catch (error) {
       setNotice({ kind: "error", text: toErrorMessage(error) });
     } finally {
       setIsSubmitting(false);
@@ -303,7 +330,7 @@ function LoginPage({
               <CardDescription>
                 {mode === "admin"
                   ? "Default local credentials are admin / admin123."
-                  : "Use account ID and matching account email."}
+                  : "Sign in with account ID and email, or create a new account."}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -347,6 +374,30 @@ function LoginPage({
                     disabled={isSubmitting}
                   >
                     {isSubmitting ? "Signing In..." : "Sign In as User"}
+                  </Button>
+
+                  <div className="my-2 border-t border-[var(--border-1)]" />
+
+                  <p className="text-xs font-semibold uppercase tracking-wide text-[var(--text-2)]">
+                    New user sign up
+                  </p>
+                  <Input
+                    placeholder="Full name"
+                    value={signUpName}
+                    onChange={(event) => setSignUpName(event.target.value)}
+                  />
+                  <Input
+                    placeholder="Email"
+                    value={signUpEmail}
+                    onChange={(event) => setSignUpEmail(event.target.value)}
+                  />
+                  <Button
+                    className="w-full"
+                    variant="secondary"
+                    onClick={() => void handleUserSignUp()}
+                    disabled={isSubmitting}
+                  >
+                    {isSubmitting ? "Creating Account..." : "Sign Up as New User"}
                   </Button>
                 </>
               )}
@@ -393,6 +444,7 @@ function Workspace({
   const [userRecipientId, setUserRecipientId] = useState("");
   const [userPaymentAmount, setUserPaymentAmount] = useState("");
   const [userStatementPeriod, setUserStatementPeriod] = useState("");
+  const [userTopUpAmount, setUserTopUpAmount] = useState("");
 
   const totalBalance = useMemo(
     () =>
@@ -626,6 +678,25 @@ function Workspace({
       await createStatement(accountId, userStatementPeriod.trim());
       setUserStatementPeriod("");
       setNotice({ kind: "success", text: "Statement generated." });
+      await refreshAll();
+    } catch (error) {
+      setNotice({ kind: "error", text: toErrorMessage(error) });
+    }
+  }
+
+  async function handleUserTopUp() {
+    const accountId = Number(selectedUserAccountId);
+    const amount = Number(userTopUpAmount);
+
+    if (!accountId || !amount || amount <= 0) {
+      setNotice({ kind: "error", text: "Provide a valid top-up amount." });
+      return;
+    }
+
+    try {
+      await creditAccount(accountId, amount);
+      setUserTopUpAmount("");
+      setNotice({ kind: "success", text: "Top up completed." });
       await refreshAll();
     } catch (error) {
       setNotice({ kind: "error", text: toErrorMessage(error) });
@@ -1090,6 +1161,34 @@ function Workspace({
                   Sender account is fixed by your session and cannot be
                   overridden.
                 </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Wallet className="h-5 w-5" /> Top Up Balance
+                </CardTitle>
+                <CardDescription>
+                  Add funds to your own account only.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <Input
+                    placeholder="Amount"
+                    type="number"
+                    value={userTopUpAmount}
+                    onChange={(event) => setUserTopUpAmount(event.target.value)}
+                  />
+                  <Button
+                    variant="secondary"
+                    onClick={() => void handleUserTopUp()}
+                    disabled={!activeUserAccount}
+                  >
+                    Top Up
+                  </Button>
+                </div>
               </CardContent>
             </Card>
 

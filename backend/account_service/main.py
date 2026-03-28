@@ -107,10 +107,18 @@ def list_accounts(
 def create_account(
     name: str,
     email: str,
-    _: AuthContext = Depends(require_roles("admin")),
     db: Session = Depends(get_db),
 ):
-    account = Account(name=name, email=email)
+    normalized_email = email.strip().lower()
+    existing_account = (
+        db.query(Account)
+        .filter(Account.email == normalized_email)
+        .first()
+    )
+    if existing_account:
+        raise HTTPException(status_code=409, detail="Email is already registered")
+
+    account = Account(name=name.strip(), email=normalized_email)
     db.add(account)
     db.commit()
     db.refresh(account)
@@ -138,6 +146,8 @@ def debit_account(
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero")
     if account.balance < amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
     account.balance -= amount
@@ -149,12 +159,19 @@ def debit_account(
 def credit_account(
     account_id: int,
     amount: float,
-    _: AuthContext = Depends(require_admin_or_internal),
+    auth: AuthContext = Depends(get_auth_or_internal_context),
     db: Session = Depends(get_db),
 ):
+    if auth.role == "user":
+        ensure_account_access(auth, account_id)
+    elif auth.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero")
     account.balance += amount
     db.commit()
     db.refresh(account)

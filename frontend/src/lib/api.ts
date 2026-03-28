@@ -126,6 +126,10 @@ export function createAccount(name: string, email: string): Promise<Account> {
   })
 }
 
+export function signUpUser(name: string, email: string): Promise<Account> {
+  return createAccount(name, email)
+}
+
 export function creditAccount(accountId: number, amount: number): Promise<{ new_balance: number }> {
   return http<{ new_balance: number }>(
     `/api/accounts/credit?${queryString({ account_id: accountId, amount })}`,
