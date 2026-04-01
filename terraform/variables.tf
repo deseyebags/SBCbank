@@ -114,6 +114,50 @@ variable "use_localstack" {
   default     = false
 }
 
+# ── IAM Governance ──────────────────────────────────────────────────────────
+
+variable "enable_human_iam_roles" {
+  description = "Create human-access IAM roles (admin, devops, auditor, support)."
+  type        = bool
+  default     = true
+}
+
+variable "human_iam_role_principal_arns" {
+  description = "AWS principal ARNs allowed to assume human-access roles. Defaults to account root if empty."
+  type        = list(string)
+  default     = []
+}
+
+variable "enable_kms_customer_managed_keys" {
+  description = "Create customer-managed KMS keys and use them for sensitive data and logs."
+  type        = bool
+  default     = true
+}
+
+variable "enable_identity_center" {
+  description = "Enable IAM Identity Center permission sets (requires identity_center_instance_arn)."
+  type        = bool
+  default     = false
+}
+
+variable "identity_center_instance_arn" {
+  description = "IAM Identity Center instance ARN used to create permission sets."
+  type        = string
+  default     = ""
+}
+
+variable "enable_organizations_governance" {
+  description = "Enable Organizations SCP creation and optional attachment to a root/OU/account target."
+  type        = bool
+  default     = false
+}
+
+variable "organizations_scp_target_id" {
+  description = "Organizations target ID (root/OU/account) for SCP attachment. Leave empty to create SCPs without attachments."
+  type        = string
+  default     = ""
+}
+
 # ── Cognito ──────────────────────────────────────────────────────────────────
 
 variable "cognito_user_pool_name" {

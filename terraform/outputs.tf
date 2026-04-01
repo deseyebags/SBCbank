@@ -174,3 +174,31 @@ output "compliance_dashboard_name" {
   description = "CloudWatch dashboard name for compliance KPIs."
   value       = aws_cloudwatch_dashboard.compliance.dashboard_name
 }
+
+output "human_iam_role_arns" {
+  description = "ARNs of human-access IAM roles (admin, devops, auditor, support)."
+  value       = { for name, role in aws_iam_role.human_access : name => role.arn }
+}
+
+output "kms_key_arns" {
+  description = "Customer-managed KMS key ARNs used for transaction, PII, and logs encryption."
+  value = {
+    transaction_data_key = try(aws_kms_key.transaction_data[0].arn, null)
+    pii_data_key         = try(aws_kms_key.pii_data[0].arn, null)
+    logs_key             = try(aws_kms_key.logs[0].arn, null)
+  }
+}
+
+output "identity_center_permission_set_arns" {
+  description = "IAM Identity Center permission set ARNs keyed by role name."
+  value       = { for name, ps in aws_ssoadmin_permission_set.human_access : name => ps.arn }
+}
+
+output "scp_policy_ids" {
+  description = "Organizations SCP policy IDs for governance controls."
+  value = {
+    deny_root_user_actions         = try(aws_organizations_policy.deny_root_user_actions[0].id, null)
+    restrict_non_singapore_regions = try(aws_organizations_policy.restrict_non_singapore_regions[0].id, null)
+    enforce_encryption             = try(aws_organizations_policy.enforce_encryption[0].id, null)
+  }
+}

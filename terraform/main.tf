@@ -14,6 +14,89 @@ locals {
     notification = "${path.module}/../lambdas/notification_lambda.py"
     fraud        = "${path.module}/../lambdas/fraud_lambda.py"
   }
+
+  human_role_assume_principals = length(var.human_iam_role_principal_arns) > 0 ? var.human_iam_role_principal_arns : ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+
+  identity_center_enabled          = var.enable_identity_center && length(trimspace(var.identity_center_instance_arn)) > 0 && !var.use_localstack
+  organizations_governance_enabled = var.enable_organizations_governance && !var.use_localstack
+
+  human_access_roles = {
+    admin = {
+      description         = "Administrative role for platform owners"
+      managed_policy_arns = ["arn:aws:iam::aws:policy/AdministratorAccess"]
+    }
+    devops = {
+      description = "DevOps role for infrastructure and deployment operations"
+      managed_policy_arns = [
+        "arn:aws:iam::aws:policy/PowerUserAccess",
+        "arn:aws:iam::aws:policy/IAMReadOnlyAccess"
+      ]
+    }
+    auditor = {
+      description = "Read-only security and compliance audit role"
+      managed_policy_arns = [
+        "arn:aws:iam::aws:policy/SecurityAudit",
+        "arn:aws:iam::aws:policy/ReadOnlyAccess"
+      ]
+    }
+    support_read_only = {
+      description         = "Operational diagnostics role with read-only access"
+      managed_policy_arns = ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
+    }
+  }
+
+  human_access_role_policy_attachments = merge([
+    for role_name, role_def in local.human_access_roles : {
+      for policy_arn in role_def.managed_policy_arns :
+      "${role_name}|${policy_arn}" => {
+        role_name  = role_name
+        policy_arn = policy_arn
+      }
+    }
+  ]...)
+
+  identity_center_permission_sets = {
+    admin = {
+      description      = "Administrative access for security-approved platform operators"
+      session_duration = "PT4H"
+      managed_policy_arns = [
+        "arn:aws:iam::aws:policy/AdministratorAccess"
+      ]
+    }
+    devops = {
+      description      = "Infrastructure deployment and operations access"
+      session_duration = "PT4H"
+      managed_policy_arns = [
+        "arn:aws:iam::aws:policy/PowerUserAccess",
+        "arn:aws:iam::aws:policy/IAMReadOnlyAccess"
+      ]
+    }
+    auditor = {
+      description      = "Read-only compliance and audit access"
+      session_duration = "PT2H"
+      managed_policy_arns = [
+        "arn:aws:iam::aws:policy/SecurityAudit",
+        "arn:aws:iam::aws:policy/ReadOnlyAccess"
+      ]
+    }
+    support_read_only = {
+      description      = "Read-only operational diagnostics access"
+      session_duration = "PT2H"
+      managed_policy_arns = [
+        "arn:aws:iam::aws:policy/ReadOnlyAccess"
+      ]
+    }
+  }
+
+  identity_center_permission_set_policy_attachments = merge([
+    for permission_set_name, definition in local.identity_center_permission_sets : {
+      for policy_arn in definition.managed_policy_arns :
+      "${permission_set_name}|${policy_arn}" => {
+        permission_set_name = permission_set_name
+        policy_arn          = policy_arn
+      }
+    }
+  ]...)
 }
 
 data "aws_availability_zones" "available" {
@@ -445,6 +528,7 @@ resource "aws_db_instance" "main" {
   allocated_storage      = 20
   max_allocated_storage  = 100
   storage_encrypted      = true
+  kms_key_id             = var.enable_kms_customer_managed_keys ? aws_kms_key.transaction_data[0].arn : null
   db_name                = var.db_name
   username               = var.db_username
   password               = var.db_password
@@ -828,12 +912,14 @@ resource "aws_apigatewayv2_authorizer" "cognito_jwt" {
 resource "aws_cloudwatch_log_group" "app" {
   name              = "/sbcbank/${var.environment}/app"
   retention_in_days = 30
+  kms_key_id        = var.enable_kms_customer_managed_keys ? aws_kms_key.logs[0].arn : null
   tags              = { Name = "${local.prefix}-log-group" }
 }
 
 resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
   name              = "/aws/vpc/${local.prefix}/flow-logs"
   retention_in_days = 30
+  kms_key_id        = var.enable_kms_customer_managed_keys ? aws_kms_key.logs[0].arn : null
   tags              = { Name = "${local.prefix}-vpc-flow-logs" }
 }
 
@@ -1095,6 +1181,7 @@ resource "aws_iam_role_policy" "step_functions" {
 resource "aws_cloudwatch_log_group" "payment_workflow" {
   name              = "/aws/states/${local.prefix}-payment-workflow"
   retention_in_days = 30
+  kms_key_id        = var.enable_kms_customer_managed_keys ? aws_kms_key.logs[0].arn : null
   tags              = { Name = "${local.prefix}-payment-workflow-logs" }
 }
 
@@ -1547,7 +1634,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "lambda_artifacts"
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = var.enable_kms_customer_managed_keys ? "aws:kms" : "AES256"
+      kms_master_key_id = var.enable_kms_customer_managed_keys ? aws_kms_key.transaction_data[0].arn : null
     }
   }
 }
@@ -1573,7 +1661,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "statements" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = var.enable_kms_customer_managed_keys ? "aws:kms" : "AES256"
+      kms_master_key_id = var.enable_kms_customer_managed_keys ? aws_kms_key.pii_data[0].arn : null
     }
   }
 }
@@ -1639,7 +1728,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "cloudtrail" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = var.enable_kms_customer_managed_keys ? "aws:kms" : "AES256"
+      kms_master_key_id = var.enable_kms_customer_managed_keys ? aws_kms_key.logs[0].arn : null
     }
   }
 }
@@ -1688,6 +1778,7 @@ resource "aws_s3_bucket_policy" "cloudtrail" {
 resource "aws_cloudtrail" "main" {
   name                          = "${local.prefix}-trail"
   s3_bucket_name                = aws_s3_bucket.cloudtrail.id
+  kms_key_id                    = var.enable_kms_customer_managed_keys ? aws_kms_key.logs[0].arn : null
   include_global_service_events = true
   is_multi_region_trail         = true
   enable_log_file_validation    = true
@@ -1747,7 +1838,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "athena_results" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = var.enable_kms_customer_managed_keys ? "aws:kms" : "AES256"
+      kms_master_key_id = var.enable_kms_customer_managed_keys ? aws_kms_key.logs[0].arn : null
     }
   }
 }
@@ -1778,7 +1870,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "compliance_metric
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = var.enable_kms_customer_managed_keys ? "aws:kms" : "AES256"
+      kms_master_key_id = var.enable_kms_customer_managed_keys ? aws_kms_key.logs[0].arn : null
     }
   }
 }
@@ -1909,7 +2002,350 @@ resource "aws_athena_named_query" "latest_compliance_snapshot" {
 resource "aws_cloudwatch_log_group" "compliance_metrics" {
   name              = "/sbcbank/${var.environment}/compliance-metrics"
   retention_in_days = 30
+  kms_key_id        = var.enable_kms_customer_managed_keys ? aws_kms_key.logs[0].arn : null
   tags              = { Name = "${local.prefix}-compliance-metrics-log-group" }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IAM governance – human access roles, identity center, SCPs, and KMS CMKs
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_iam_role" "human_access" {
+  for_each = var.enable_human_iam_roles ? local.human_access_roles : {}
+
+  name                 = "${local.prefix}-${each.key}-role"
+  description          = each.value.description
+  max_session_duration = 14400
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        AWS = local.human_role_assume_principals
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "human_access_managed" {
+  for_each = var.enable_human_iam_roles ? local.human_access_role_policy_attachments : {}
+
+  role       = aws_iam_role.human_access[each.value.role_name].name
+  policy_arn = each.value.policy_arn
+}
+
+resource "aws_kms_key" "transaction_data" {
+  count = var.enable_kms_customer_managed_keys ? 1 : 0
+
+  description             = "${local.prefix} transaction data CMK"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowRootFullAccess"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowTransactionWorkloads"
+        Effect = "Allow"
+        Principal = {
+          AWS = [
+            aws_iam_role.ecs_task["account"].arn,
+            aws_iam_role.ecs_task["transaction"].arn,
+            aws_iam_role.ecs_task["ledger"].arn,
+            aws_iam_role.step_functions.arn,
+            aws_iam_role.lambda_execution["fraud"].arn
+          ]
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = { Name = "${local.prefix}-transaction-data-key" }
+}
+
+resource "aws_kms_alias" "transaction_data" {
+  count = var.enable_kms_customer_managed_keys ? 1 : 0
+
+  name          = "alias/${local.prefix}-transaction-data"
+  target_key_id = aws_kms_key.transaction_data[0].key_id
+}
+
+resource "aws_kms_key" "pii_data" {
+  count = var.enable_kms_customer_managed_keys ? 1 : 0
+
+  description             = "${local.prefix} PII data CMK"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowRootFullAccess"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowPIIWorkloads"
+        Effect = "Allow"
+        Principal = {
+          AWS = [
+            aws_iam_role.ecs_task["account"].arn,
+            aws_iam_role.ecs_task["statement"].arn,
+            aws_iam_role.lambda_execution["notification"].arn
+          ]
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = { Name = "${local.prefix}-pii-data-key" }
+}
+
+resource "aws_kms_alias" "pii_data" {
+  count = var.enable_kms_customer_managed_keys ? 1 : 0
+
+  name          = "alias/${local.prefix}-pii-data"
+  target_key_id = aws_kms_key.pii_data[0].key_id
+}
+
+resource "aws_kms_key" "logs" {
+  count = var.enable_kms_customer_managed_keys ? 1 : 0
+
+  description             = "${local.prefix} logs and audit CMK"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowRootFullAccess"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowCloudTrailUse"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action = [
+          "kms:GenerateDataKey*",
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowCloudWatchLogsUse"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.${var.aws_region}.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowFlowLogsAndWorkflowRoles"
+        Effect = "Allow"
+        Principal = {
+          AWS = [
+            aws_iam_role.vpc_flow_logs.arn,
+            aws_iam_role.step_functions.arn
+          ]
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = { Name = "${local.prefix}-logs-key" }
+}
+
+resource "aws_kms_alias" "logs" {
+  count = var.enable_kms_customer_managed_keys ? 1 : 0
+
+  name          = "alias/${local.prefix}-logs"
+  target_key_id = aws_kms_key.logs[0].key_id
+}
+
+resource "aws_ssoadmin_permission_set" "human_access" {
+  for_each = local.identity_center_enabled ? local.identity_center_permission_sets : {}
+
+  instance_arn     = var.identity_center_instance_arn
+  name             = "${local.prefix}-${each.key}"
+  description      = each.value.description
+  session_duration = each.value.session_duration
+}
+
+resource "aws_ssoadmin_managed_policy_attachment" "human_access" {
+  for_each = local.identity_center_enabled ? local.identity_center_permission_set_policy_attachments : {}
+
+  instance_arn       = var.identity_center_instance_arn
+  permission_set_arn = aws_ssoadmin_permission_set.human_access[each.value.permission_set_name].arn
+  managed_policy_arn = each.value.policy_arn
+}
+
+resource "aws_organizations_policy" "deny_root_user_actions" {
+  count = local.organizations_governance_enabled ? 1 : 0
+
+  name        = "${local.prefix}-deny-root-user-actions"
+  description = "Deny API access when principal is root user"
+  type        = "SERVICE_CONTROL_POLICY"
+
+  content = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "DenyRootUserActions"
+        Effect   = "Deny"
+        Action   = "*"
+        Resource = "*"
+        Condition = {
+          StringLike = {
+            "aws:PrincipalArn" = "arn:aws:iam::*:root"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_organizations_policy" "restrict_non_singapore_regions" {
+  count = local.organizations_governance_enabled ? 1 : 0
+
+  name        = "${local.prefix}-restrict-non-singapore-regions"
+  description = "Restrict operations to ap-southeast-1 except global services"
+  type        = "SERVICE_CONTROL_POLICY"
+
+  content = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DenyUnsupportedRegions"
+        Effect = "Deny"
+        NotAction = [
+          "iam:*",
+          "organizations:*",
+          "route53:*",
+          "cloudfront:*",
+          "support:*"
+        ]
+        Resource = "*"
+        Condition = {
+          StringNotEquals = {
+            "aws:RequestedRegion" = "ap-southeast-1"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_organizations_policy" "enforce_encryption" {
+  count = local.organizations_governance_enabled ? 1 : 0
+
+  name        = "${local.prefix}-enforce-encryption"
+  description = "Enforce encryption at rest and secure transport"
+  type        = "SERVICE_CONTROL_POLICY"
+
+  content = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "DenyUnencryptedS3Puts"
+        Effect   = "Deny"
+        Action   = "s3:PutObject"
+        Resource = "arn:aws:s3:::*/*"
+        Condition = {
+          StringNotEqualsIfExists = {
+            "s3:x-amz-server-side-encryption" = ["AES256", "aws:kms"]
+          }
+        }
+      },
+      {
+        Sid      = "DenyInsecureS3Transport"
+        Effect   = "Deny"
+        Action   = "s3:*"
+        Resource = "*"
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_organizations_policy_attachment" "deny_root_user_actions" {
+  count = local.organizations_governance_enabled && length(trimspace(var.organizations_scp_target_id)) > 0 ? 1 : 0
+
+  policy_id = aws_organizations_policy.deny_root_user_actions[0].id
+  target_id = var.organizations_scp_target_id
+}
+
+resource "aws_organizations_policy_attachment" "restrict_non_singapore_regions" {
+  count = local.organizations_governance_enabled && length(trimspace(var.organizations_scp_target_id)) > 0 ? 1 : 0
+
+  policy_id = aws_organizations_policy.restrict_non_singapore_regions[0].id
+  target_id = var.organizations_scp_target_id
+}
+
+resource "aws_organizations_policy_attachment" "enforce_encryption" {
+  count = local.organizations_governance_enabled && length(trimspace(var.organizations_scp_target_id)) > 0 ? 1 : 0
+
+  policy_id = aws_organizations_policy.enforce_encryption[0].id
+  target_id = var.organizations_scp_target_id
 }
 
 resource "aws_cloudwatch_log_metric_filter" "payment_success_rate" {
