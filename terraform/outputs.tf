@@ -23,6 +23,16 @@ output "ecs_cluster_name" {
   value       = aws_ecs_cluster.main.name
 }
 
+output "ecs_task_execution_role_arn" {
+  description = "ARN of the ECS task execution role used for image pulls and log publishing."
+  value       = aws_iam_role.ecs_task_execution.arn
+}
+
+output "ecs_task_role_arns" {
+  description = "ARNs of per-microservice ECS task roles."
+  value       = { for service, role in aws_iam_role.ecs_task : service => role.arn }
+}
+
 output "rds_endpoint" {
   description = "Connection endpoint for the RDS PostgreSQL instance."
   value       = aws_db_instance.main.endpoint
@@ -90,6 +100,11 @@ output "fraud_lambda_arn" {
   value       = aws_lambda_function.fraud.arn
 }
 
+output "lambda_execution_role_arns" {
+  description = "ARNs of Lambda execution roles keyed by function name."
+  value       = { for fn, role in aws_iam_role.lambda_execution : fn => role.arn }
+}
+
 output "eventbridge_bus_name" {
   description = "Name of the EventBridge event bus."
   value       = aws_cloudwatch_event_bus.main.name
@@ -98,6 +113,11 @@ output "eventbridge_bus_name" {
 output "payment_workflow_state_machine_arn" {
   description = "ARN of the Step Functions payment workflow state machine."
   value       = aws_sfn_state_machine.payment_workflow.arn
+}
+
+output "step_functions_role_arn" {
+  description = "ARN of the Step Functions execution role."
+  value       = aws_iam_role.step_functions.arn
 }
 
 output "fraud_detector_name" {
@@ -118,4 +138,39 @@ output "ecs_microservice_task_definition_arns" {
 output "ecs_microservice_service_names" {
   description = "ECS service names for all scaffolded microservices."
   value       = { for service, svc in aws_ecs_service.microservice : service => svc.name }
+}
+
+output "athena_workgroup_name" {
+  description = "Athena workgroup used for compliance analytics queries."
+  value       = aws_athena_workgroup.compliance.name
+}
+
+output "athena_compliance_database_name" {
+  description = "Glue/Athena database name for compliance snapshots."
+  value       = aws_glue_catalog_database.compliance.name
+}
+
+output "athena_compliance_table_name" {
+  description = "Glue/Athena table that stores compliance snapshot records."
+  value       = aws_glue_catalog_table.compliance_snapshots.name
+}
+
+output "athena_results_bucket_name" {
+  description = "S3 bucket used by Athena for query results."
+  value       = aws_s3_bucket.athena_results.bucket
+}
+
+output "compliance_metrics_bucket_name" {
+  description = "S3 bucket where compliance metric snapshots are stored for Athena."
+  value       = aws_s3_bucket.compliance_metrics_data.bucket
+}
+
+output "compliance_metrics_log_group_name" {
+  description = "CloudWatch log group used to ingest compliance metric snapshots."
+  value       = aws_cloudwatch_log_group.compliance_metrics.name
+}
+
+output "compliance_dashboard_name" {
+  description = "CloudWatch dashboard name for compliance KPIs."
+  value       = aws_cloudwatch_dashboard.compliance.dashboard_name
 }

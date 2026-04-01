@@ -37,6 +37,7 @@ provider "aws" {
   endpoints {
     elbv2           = "http://localhost:4566"
     apigatewayv2    = "http://localhost:4566"
+    athena          = "http://localhost:4566"
     wafv2           = "http://localhost:4566"
     logs            = "http://localhost:4566"
     apigateway      = "http://localhost:4566"
@@ -51,6 +52,7 @@ provider "aws" {
     ecs             = "http://localhost:4566"
     elasticache     = "http://localhost:4566"
     es              = "http://localhost:4566"
+    glue            = "http://localhost:4566"
     iam             = "http://localhost:4566"
     kinesis         = "http://localhost:4566"
     kms             = "http://localhost:4566"

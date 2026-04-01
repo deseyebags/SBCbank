@@ -411,6 +411,22 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# IAM roles assumed by ECS application tasks (per microservice).
+resource "aws_iam_role" "ecs_task" {
+  for_each = toset(local.microservices)
+
+  name = "${local.prefix}-${each.key}-ecs-task-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Relational Database (RDS PostgreSQL)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -529,6 +545,113 @@ resource "aws_sqs_queue" "manual_review" {
   })
 
   tags = { Name = "${local.prefix}-manual-review" }
+}
+
+resource "aws_sqs_queue_policy" "transactions" {
+  queue_url = aws_sqs_queue.transactions.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowTransactionServiceSend"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.ecs_task["transaction"].arn
+        }
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.transactions.arn
+      },
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "sqs:*"
+        Resource  = aws_sqs_queue.transactions.arn
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_sqs_queue_policy" "notifications" {
+  queue_url = aws_sqs_queue.notifications.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowTransactionServiceSend"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.ecs_task["transaction"].arn
+        }
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.notifications.arn
+      },
+      {
+        Sid    = "AllowNotificationServiceConsume"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.ecs_task["notification"].arn
+        }
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:ChangeMessageVisibility"
+        ]
+        Resource = aws_sqs_queue.notifications.arn
+      },
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "sqs:*"
+        Resource  = aws_sqs_queue.notifications.arn
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_sqs_queue_policy" "manual_review" {
+  queue_url = aws_sqs_queue.manual_review.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowStepFunctionsSend"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.step_functions.arn
+        }
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.manual_review.arn
+      },
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "sqs:*"
+        Resource  = aws_sqs_queue.manual_review.arn
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -736,13 +859,13 @@ resource "aws_iam_role_policy" "vpc_flow_logs" {
     Statement = [{
       Effect = "Allow"
       Action = [
-        "logs:CreateLogGroup",
         "logs:CreateLogStream",
         "logs:PutLogEvents",
-        "logs:DescribeLogGroups",
         "logs:DescribeLogStreams"
       ]
-      Resource = "*"
+      Resource = [
+        "${aws_cloudwatch_log_group.vpc_flow_logs.arn}:*"
+      ]
     }]
   })
 }
@@ -800,7 +923,9 @@ resource "aws_cognito_identity_pool" "main" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "lambda_execution" {
-  name = "${local.prefix}-lambda-execution-role"
+  for_each = local.lambda_sources
+
+  name = "${local.prefix}-${each.key}-lambda-execution-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -813,8 +938,46 @@ resource "aws_iam_role" "lambda_execution" {
 }
 
 resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
-  role       = aws_iam_role.lambda_execution.name
+  for_each = aws_iam_role.lambda_execution
+
+  role       = each.value.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "lambda_notification_data_access" {
+  name = "${local.prefix}-notification-lambda-data-policy"
+  role = aws_iam_role.lambda_execution["notification"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "s3:GetObject"
+      ]
+      Resource = [
+        "${aws_s3_bucket.statements.arn}/*"
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "lambda_fraud_data_access" {
+  name = "${local.prefix}-fraud-lambda-data-policy"
+  role = aws_iam_role.lambda_execution["fraud"].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "dynamodb:PutItem"
+      ]
+      Resource = [
+        "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.prefix}-fraud-events"
+      ]
+    }]
+  })
 }
 
 data "archive_file" "lambda_package" {
@@ -835,7 +998,7 @@ resource "aws_s3_object" "lambda_package" {
 
 resource "aws_lambda_function" "notification" {
   function_name = "${local.prefix}-notification-lambda"
-  role          = aws_iam_role.lambda_execution.arn
+  role          = aws_iam_role.lambda_execution["notification"].arn
   runtime       = var.lambda_runtime
   handler       = var.notification_lambda_handler
 
@@ -848,7 +1011,7 @@ resource "aws_lambda_function" "notification" {
 
 resource "aws_lambda_function" "fraud" {
   function_name = "${local.prefix}-fraud-lambda"
-  role          = aws_iam_role.lambda_execution.arn
+  role          = aws_iam_role.lambda_execution["fraud"].arn
   runtime       = var.lambda_runtime
   handler       = var.fraud_lambda_handler
 
@@ -1199,6 +1362,102 @@ locals {
     statement    = 50
     notification = 60
   }
+
+  # Service-level task permissions keep runtime access scoped by microservice.
+  ecs_service_role_policies = {
+    account = [
+      {
+        Sid    = "AccountServiceQueueWrite"
+        Effect = "Allow"
+        Action = ["sqs:SendMessage"]
+        Resource = [
+          aws_sqs_queue.transactions.arn
+        ]
+      }
+    ]
+    transaction = [
+      {
+        Sid    = "TransactionServiceQueueWrite"
+        Effect = "Allow"
+        Action = ["sqs:SendMessage"]
+        Resource = [
+          aws_sqs_queue.transactions.arn,
+          aws_sqs_queue.notifications.arn
+        ]
+      },
+      {
+        Sid    = "TransactionServiceEventPublish"
+        Effect = "Allow"
+        Action = ["events:PutEvents"]
+        Resource = [
+          aws_cloudwatch_event_bus.main.arn
+        ]
+      }
+    ]
+    ledger = [
+      {
+        Sid    = "LedgerServiceTableAccess"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query"
+        ]
+        Resource = [
+          "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.prefix}-ledger"
+        ]
+      }
+    ]
+    statement = [
+      {
+        Sid    = "StatementServiceTableRead"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:BatchGetItem",
+          "dynamodb:GetItem",
+          "dynamodb:Query"
+        ]
+        Resource = [
+          "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.prefix}-ledger"
+        ]
+      },
+      {
+        Sid    = "StatementServiceS3Read"
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = [
+          "${aws_s3_bucket.statements.arn}/*"
+        ]
+      }
+    ]
+    notification = [
+      {
+        Sid    = "NotificationServiceQueueConsume"
+        Effect = "Allow"
+        Action = [
+          "sqs:ChangeMessageVisibility",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:ReceiveMessage"
+        ]
+        Resource = [
+          aws_sqs_queue.notifications.arn
+        ]
+      }
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "ecs_task_app_permissions" {
+  for_each = local.ecs_service_role_policies
+
+  name = "${local.prefix}-${each.key}-ecs-task-app-policy"
+  role = aws_iam_role.ecs_task[each.key].id
+
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = each.value
+  })
 }
 
 resource "aws_ecs_task_definition" "microservice" {
@@ -1210,7 +1469,7 @@ resource "aws_ecs_task_definition" "microservice" {
   cpu                      = tostring(var.ecs_task_cpu)
   memory                   = tostring(var.ecs_task_memory)
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
-  task_role_arn            = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task[each.key].arn
 
   # TODO: Replace demo image and env vars with real service containers.
   container_definitions = jsonencode([
@@ -1472,4 +1731,319 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   dimensions = {
     DBInstanceIdentifier = aws_db_instance.main.id
   }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Compliance analytics – Athena + Glue + CloudWatch dashboard/alarms
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_s3_bucket" "athena_results" {
+  bucket = "${local.prefix}-athena-results-${data.aws_caller_identity.current.account_id}"
+  tags   = { Name = "${local.prefix}-athena-results" }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "athena_results" {
+  bucket = aws_s3_bucket.athena_results.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "athena_results" {
+  bucket                  = aws_s3_bucket.athena_results.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "athena_results" {
+  bucket = aws_s3_bucket.athena_results.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket" "compliance_metrics_data" {
+  bucket = "${local.prefix}-compliance-metrics-${data.aws_caller_identity.current.account_id}"
+  tags   = { Name = "${local.prefix}-compliance-metrics" }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "compliance_metrics_data" {
+  bucket = aws_s3_bucket.compliance_metrics_data.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "compliance_metrics_data" {
+  bucket                  = aws_s3_bucket.compliance_metrics_data.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "compliance_metrics_data" {
+  bucket = aws_s3_bucket.compliance_metrics_data.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_glue_catalog_database" "compliance" {
+  name = "${var.compliance_glue_database_name}_${var.environment}"
+}
+
+resource "aws_glue_catalog_table" "compliance_snapshots" {
+  name          = var.compliance_glue_table_name
+  database_name = aws_glue_catalog_database.compliance.name
+  table_type    = "EXTERNAL_TABLE"
+
+  parameters = {
+    classification = "json"
+    typeOfData     = "file"
+  }
+
+  storage_descriptor {
+    location      = "s3://${aws_s3_bucket.compliance_metrics_data.bucket}/snapshots/"
+    input_format  = "org.apache.hadoop.mapred.TextInputFormat"
+    output_format = "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat"
+
+    ser_de_info {
+      serialization_library = "org.openx.data.jsonserde.JsonSerDe"
+    }
+
+    columns {
+      name = "snapshot_time"
+      type = "string"
+    }
+
+    columns {
+      name = "payment_success_rate_pct_30d"
+      type = "double"
+    }
+
+    columns {
+      name = "failed_payments_30d"
+      type = "bigint"
+    }
+
+    columns {
+      name = "failed_workflows_30d"
+      type = "bigint"
+    }
+
+    columns {
+      name = "running_workflows_30d"
+      type = "bigint"
+    }
+
+    columns {
+      name = "high_value_payments_30d"
+      type = "bigint"
+    }
+
+    columns {
+      name = "avg_payment_amount_30d"
+      type = "double"
+    }
+
+    columns {
+      name = "ledger_coverage_pct"
+      type = "double"
+    }
+
+    columns {
+      name = "statement_coverage_pct"
+      type = "double"
+    }
+  }
+}
+
+resource "aws_athena_workgroup" "compliance" {
+  name = "${local.prefix}-compliance"
+
+  configuration {
+    enforce_workgroup_configuration = true
+
+    result_configuration {
+      output_location = "s3://${aws_s3_bucket.athena_results.bucket}/query-results/"
+    }
+  }
+
+  state = "ENABLED"
+  tags  = { Name = "${local.prefix}-athena-compliance" }
+}
+
+resource "aws_athena_named_query" "latest_compliance_snapshot" {
+  name      = "${local.prefix}-latest-compliance-snapshot"
+  database  = aws_glue_catalog_database.compliance.name
+  workgroup = aws_athena_workgroup.compliance.name
+
+  query = <<-SQL
+    SELECT
+      from_iso8601_timestamp(snapshot_time) AS snapshot_time,
+      payment_success_rate_pct_30d,
+      failed_payments_30d,
+      failed_workflows_30d,
+      running_workflows_30d,
+      high_value_payments_30d,
+      avg_payment_amount_30d,
+      ledger_coverage_pct,
+      statement_coverage_pct
+    FROM ${var.compliance_glue_table_name}
+    ORDER BY from_iso8601_timestamp(snapshot_time) DESC
+    LIMIT 1;
+  SQL
+}
+
+resource "aws_cloudwatch_log_group" "compliance_metrics" {
+  name              = "/sbcbank/${var.environment}/compliance-metrics"
+  retention_in_days = 30
+  tags              = { Name = "${local.prefix}-compliance-metrics-log-group" }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "payment_success_rate" {
+  name           = "${local.prefix}-payment-success-rate"
+  pattern        = "{ $.payment_success_rate_pct_30d = * }"
+  log_group_name = aws_cloudwatch_log_group.compliance_metrics.name
+
+  metric_transformation {
+    name      = "PaymentSuccessRate30d"
+    namespace = var.compliance_metrics_namespace
+    value     = "$.payment_success_rate_pct_30d"
+    unit      = "Percent"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "workflow_failure_rate" {
+  name           = "${local.prefix}-workflow-failure-rate"
+  pattern        = "{ $.failed_workflows_30d = * && $.total_payments_30d = * }"
+  log_group_name = aws_cloudwatch_log_group.compliance_metrics.name
+
+  metric_transformation {
+    name      = "FailedWorkflows30d"
+    namespace = var.compliance_metrics_namespace
+    value     = "$.failed_workflows_30d"
+    unit      = "Count"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "ledger_coverage" {
+  name           = "${local.prefix}-ledger-coverage"
+  pattern        = "{ $.ledger_coverage_pct = * }"
+  log_group_name = aws_cloudwatch_log_group.compliance_metrics.name
+
+  metric_transformation {
+    name      = "LedgerCoveragePct"
+    namespace = var.compliance_metrics_namespace
+    value     = "$.ledger_coverage_pct"
+    unit      = "Percent"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "statement_coverage" {
+  name           = "${local.prefix}-statement-coverage"
+  pattern        = "{ $.statement_coverage_pct = * }"
+  log_group_name = aws_cloudwatch_log_group.compliance_metrics.name
+
+  metric_transformation {
+    name      = "StatementCoveragePct"
+    namespace = var.compliance_metrics_namespace
+    value     = "$.statement_coverage_pct"
+    unit      = "Percent"
+  }
+}
+
+resource "aws_cloudwatch_dashboard" "compliance" {
+  dashboard_name = "${local.prefix}-compliance-dashboard"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type   = "metric"
+        x      = 0
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          title  = "Compliance KPI Percentages"
+          region = var.aws_region
+          stat   = "Average"
+          period = 300
+          view   = "timeSeries"
+          metrics = [
+            [var.compliance_metrics_namespace, "PaymentSuccessRate30d"],
+            [".", "LedgerCoveragePct"],
+            [".", "StatementCoveragePct"]
+          ]
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          title  = "Compliance KPI Counts"
+          region = var.aws_region
+          stat   = "Average"
+          period = 300
+          view   = "timeSeries"
+          metrics = [
+            [var.compliance_metrics_namespace, "FailedWorkflows30d"]
+          ]
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_cloudwatch_metric_alarm" "compliance_payment_success_low" {
+  alarm_name          = "${local.prefix}-compliance-payment-success-low"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "PaymentSuccessRate30d"
+  namespace           = var.compliance_metrics_namespace
+  period              = 300
+  statistic           = "Average"
+  threshold           = 97
+  alarm_description   = "Alarm when 30d payment success rate drops below 97%."
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "compliance_ledger_coverage_low" {
+  alarm_name          = "${local.prefix}-compliance-ledger-coverage-low"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "LedgerCoveragePct"
+  namespace           = var.compliance_metrics_namespace
+  period              = 300
+  statistic           = "Average"
+  threshold           = 98
+  alarm_description   = "Alarm when ledger coverage for completed workflows drops below 98%."
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "compliance_statement_coverage_low" {
+  alarm_name          = "${local.prefix}-compliance-statement-coverage-low"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "StatementCoveragePct"
+  namespace           = var.compliance_metrics_namespace
+  period              = 300
+  statistic           = "Average"
+  threshold           = 95
+  alarm_description   = "Alarm when statement coverage for active accounts drops below 95%."
+  treat_missing_data  = "notBreaching"
 }

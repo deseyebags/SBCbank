@@ -136,5 +136,19 @@ services:
     ports:
       - "8006:8000"
 
+  metabase:
+    image: metabase/metabase:latest
+    container_name: scbbank-metabase
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3001:3000"
+    volumes:
+      - metabase_data:/metabase-data
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+
 volumes:
   postgres_data:
+  metabase_data:

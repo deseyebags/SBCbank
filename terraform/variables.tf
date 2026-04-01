@@ -175,3 +175,23 @@ variable "fraud_detector_id" {
   type        = string
   default     = "sbcbank-fraud-detector"
 }
+
+# ── Compliance Analytics (Athena + CloudWatch) ─────────────────────────────
+
+variable "compliance_metrics_namespace" {
+  description = "CloudWatch namespace for compliance custom metrics."
+  type        = string
+  default     = "SBCBank/Compliance"
+}
+
+variable "compliance_glue_database_name" {
+  description = "Glue database name for compliance analytics datasets."
+  type        = string
+  default     = "sbcbank_compliance"
+}
+
+variable "compliance_glue_table_name" {
+  description = "Glue table name that stores compliance metric snapshots."
+  type        = string
+  default     = "compliance_snapshots"
+}
