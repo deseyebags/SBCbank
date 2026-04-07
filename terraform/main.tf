@@ -638,10 +638,10 @@ resource "aws_sqs_queue_policy" "transactions" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowTransactionServiceSend"
+        Sid    = "AllowPaymentServiceSend"
         Effect = "Allow"
         Principal = {
-          AWS = aws_iam_role.ecs_task["transaction"].arn
+          AWS = aws_iam_role.ecs_task["payment"].arn
         }
         Action   = "sqs:SendMessage"
         Resource = aws_sqs_queue.transactions.arn
@@ -669,10 +669,10 @@ resource "aws_sqs_queue_policy" "notifications" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowTransactionServiceSend"
+        Sid    = "AllowPaymentServiceSend"
         Effect = "Allow"
         Principal = {
-          AWS = aws_iam_role.ecs_task["transaction"].arn
+          AWS = aws_iam_role.ecs_task["payment"].arn
         }
         Action   = "sqs:SendMessage"
         Resource = aws_sqs_queue.notifications.arn
@@ -903,6 +903,54 @@ resource "aws_apigatewayv2_authorizer" "cognito_jwt" {
     audience = [aws_cognito_user_pool_client.web.id]
     issuer   = "https://cognito-idp.${data.aws_region.current.name}.amazonaws.com/${aws_cognito_user_pool.main.id}"
   }
+}
+
+# API Gateway integration to ALB. In AWS, use VPC Link to keep service traffic
+# on private networking. LocalStack falls back to internet proxy integration.
+resource "aws_security_group" "apigw_vpc_link" {
+  count       = var.use_localstack ? 0 : 1
+  name        = "${local.prefix}-apigw-vpc-link-sg"
+  description = "Security group for API Gateway VPC Link ENIs."
+  vpc_id      = aws_vpc.main.id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "${local.prefix}-apigw-vpc-link-sg" }
+}
+
+resource "aws_apigatewayv2_vpc_link" "alb" {
+  count = var.use_localstack ? 0 : 1
+
+  name               = "${local.prefix}-api-to-alb"
+  subnet_ids         = aws_subnet.private[*].id
+  security_group_ids = [aws_security_group.apigw_vpc_link[0].id]
+
+  tags = { Name = "${local.prefix}-api-to-alb" }
+}
+
+resource "aws_apigatewayv2_integration" "alb_proxy" {
+  api_id             = aws_apigatewayv2_api.main.id
+  integration_type   = "HTTP_PROXY"
+  integration_method = "ANY"
+
+  connection_type = var.use_localstack ? "INTERNET" : "VPC_LINK"
+  connection_id   = var.use_localstack ? null : aws_apigatewayv2_vpc_link.alb[0].id
+
+  integration_uri = var.use_localstack ? "http://${aws_lb.main.dns_name}" : (local.enable_alb_https ? aws_lb_listener.https[0].arn : aws_lb_listener.http.arn)
+
+  timeout_milliseconds = 30000
+  description          = "Proxy API Gateway traffic to ALB; ALB handles service path routing."
+}
+
+resource "aws_apigatewayv2_route" "default_proxy" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "$default"
+  target    = "integrations/${aws_apigatewayv2_integration.alb_proxy.id}"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1426,25 +1474,25 @@ locals {
   microservices = [
     "user",
     "account",
-    "transaction",
+    "payment",
     "ledger",
     "statement",
     "notification"
   ]
 
   microservice_route_paths = {
-    user         = "/user/*"
-    account      = "/account/*"
-    transaction  = "/transaction/*"
-    ledger       = "/ledger/*"
-    statement    = "/statement/*"
-    notification = "/notification/*"
+    user         = "/users/*"
+    account      = "/accounts/*"
+    payment      = "/payments/*"
+    ledger       = "/ledgers/*"
+    statement    = "/statements/*"
+    notification = "/notifications/*"
   }
 
   microservice_route_priorities = {
     user         = 10
     account      = 20
-    transaction  = 30
+    payment      = 30
     ledger       = 40
     statement    = 50
     notification = 60
@@ -1462,9 +1510,9 @@ locals {
         ]
       }
     ]
-    transaction = [
+    payment = [
       {
-        Sid    = "TransactionServiceQueueWrite"
+        Sid    = "PaymentServiceQueueWrite"
         Effect = "Allow"
         Action = ["sqs:SendMessage"]
         Resource = [
@@ -1473,7 +1521,7 @@ locals {
         ]
       },
       {
-        Sid    = "TransactionServiceEventPublish"
+        Sid    = "PaymentServiceEventPublish"
         Effect = "Allow"
         Action = ["events:PutEvents"]
         Resource = [
@@ -2061,7 +2109,7 @@ resource "aws_kms_key" "transaction_data" {
         Principal = {
           AWS = [
             aws_iam_role.ecs_task["account"].arn,
-            aws_iam_role.ecs_task["transaction"].arn,
+            aws_iam_role.ecs_task["payment"].arn,
             aws_iam_role.ecs_task["ledger"].arn,
             aws_iam_role.step_functions.arn,
             aws_iam_role.lambda_execution["fraud"].arn
