@@ -7,12 +7,12 @@
 ##############################################################################
 
 locals {
-  prefix           = "${var.project_name}-${var.environment}"
-  azs              = slice(data.aws_availability_zones.available.names, 0, 2)
-  enable_alb_https = length(trimspace(var.alb_domain_name)) > 0
+  prefix = "${var.project_name}-${var.environment}"
+  azs    = slice(data.aws_availability_zones.available.names, 0, 2)
   lambda_sources = {
-    notification = "${path.module}/../lambdas/notification_lambda.py"
-    fraud        = "${path.module}/../lambdas/fraud_lambda.py"
+    notification      = "${path.module}/../lambdas/notification_lambda.py"
+    fraud             = "${path.module}/../lambdas/fraud_lambda.py"
+    default_bus_probe = "${path.module}/../lambdas/default_bus_probe_lambda.py"
   }
 
   human_role_assume_principals = length(var.human_iam_role_principal_arns) > 0 ? var.human_iam_role_principal_arns : ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
@@ -191,45 +191,16 @@ resource "aws_route_table_association" "private" {
 # Security Groups
 # ─────────────────────────────────────────────────────────────────────────────
 
-resource "aws_security_group" "alb" {
-  name        = "${local.prefix}-alb-sg"
-  description = "Allow inbound HTTPS from the internet to the ALB."
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "${local.prefix}-alb-sg" }
-}
-
 resource "aws_security_group" "ecs_tasks" {
   name        = "${local.prefix}-ecs-tasks-sg"
-  description = "Allow inbound traffic from the ALB to ECS tasks."
+  description = "Allow inbound traffic from API Gateway VPC Link to ECS tasks."
   vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port       = 80
     to_port         = 80
     protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
+    security_groups = [aws_security_group.apigw_vpc_link.id]
   }
 
   egress {
@@ -287,21 +258,11 @@ resource "aws_security_group" "redis" {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Application Load Balancer
+# Edge/API protection (WAF)
 # ─────────────────────────────────────────────────────────────────────────────
 
-resource "aws_lb" "main" {
-  name               = "${local.prefix}-alb"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
-  subnets            = aws_subnet.public[*].id
-
-  tags = { Name = "${local.prefix}-alb" }
-}
-
-resource "aws_wafv2_web_acl" "alb" {
-  name  = "${local.prefix}-alb-web-acl"
+resource "aws_wafv2_web_acl" "api" {
+  name  = "${local.prefix}-api-web-acl"
   scope = "REGIONAL"
 
   default_action {
@@ -332,122 +293,16 @@ resource "aws_wafv2_web_acl" "alb" {
 
   visibility_config {
     cloudwatch_metrics_enabled = true
-    metric_name                = "${local.prefix}-alb-web-acl"
+    metric_name                = "${local.prefix}-api-web-acl"
     sampled_requests_enabled   = true
   }
 
-  tags = { Name = "${local.prefix}-alb-web-acl" }
+  tags = { Name = "${local.prefix}-api-web-acl" }
 }
 
-resource "aws_wafv2_web_acl_association" "alb" {
-  resource_arn = aws_lb.main.arn
-  web_acl_arn  = aws_wafv2_web_acl.alb.arn
-}
-
-resource "aws_lb_target_group" "default" {
-  name        = "${local.prefix}-default-tg"
-  port        = 80
-  protocol    = "HTTP"
-  target_type = "ip"
-  vpc_id      = aws_vpc.main.id
-
-  health_check {
-    path                = "/health"
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-    interval            = 30
-  }
-}
-
-resource "aws_acm_certificate" "alb" {
-  count             = local.enable_alb_https ? 1 : 0
-  domain_name       = var.alb_domain_name
-  validation_method = "DNS"
-
-  lifecycle {
-    create_before_destroy = true
-  }
-
-  tags = { Name = "${local.prefix}-alb-cert" }
-}
-
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.main.arn
-  port              = 80
-  protocol          = "HTTP"
-
-  dynamic "default_action" {
-    for_each = local.enable_alb_https ? [1] : []
-    content {
-      type = "redirect"
-
-      redirect {
-        port        = "443"
-        protocol    = "HTTPS"
-        status_code = "HTTP_301"
-      }
-    }
-  }
-
-  dynamic "default_action" {
-    for_each = local.enable_alb_https ? [] : [1]
-    content {
-      type             = "forward"
-      target_group_arn = aws_lb_target_group.default.arn
-    }
-  }
-}
-
-resource "aws_lb_listener" "https" {
-  count             = local.enable_alb_https ? 1 : 0
-  load_balancer_arn = aws_lb.main.arn
-  port              = 443
-  protocol          = "HTTPS"
-  certificate_arn   = aws_acm_certificate.alb[0].arn
-  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.default.arn
-  }
-}
-
-resource "aws_lb_target_group" "microservice" {
-  for_each = toset(local.microservices)
-
-  name        = substr("${local.prefix}-${each.key}-tg", 0, 32)
-  port        = 80
-  protocol    = "HTTP"
-  target_type = "ip"
-  vpc_id      = aws_vpc.main.id
-
-  health_check {
-    path                = "/health"
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-    interval            = 30
-    matcher             = "200-399"
-  }
-
-  tags = { Name = "${local.prefix}-${each.key}-tg" }
-}
-
-resource "aws_lb_listener_rule" "microservice" {
-  for_each = local.microservice_route_priorities
-
-  listener_arn = local.enable_alb_https ? aws_lb_listener.https[0].arn : aws_lb_listener.http.arn
-  priority     = each.value
-
-  action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.microservice[each.key].arn
-  }
-
-  condition {
-    path_pattern {
-      values = [local.microservice_route_paths[each.key]]
-    }
-  }
+resource "aws_wafv2_web_acl_association" "api" {
+  resource_arn = aws_apigatewayv2_stage.default.arn
+  web_acl_arn  = aws_wafv2_web_acl.api.arn
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -905,10 +760,8 @@ resource "aws_apigatewayv2_authorizer" "cognito_jwt" {
   }
 }
 
-# API Gateway integration to ALB. In AWS, use VPC Link to keep service traffic
-# on private networking. LocalStack falls back to internet proxy integration.
+# API Gateway private integration to ECS microservices over VPC Link.
 resource "aws_security_group" "apigw_vpc_link" {
-  count       = var.use_localstack ? 0 : 1
   name        = "${local.prefix}-apigw-vpc-link-sg"
   description = "Security group for API Gateway VPC Link ENIs."
   vpc_id      = aws_vpc.main.id
@@ -923,34 +776,40 @@ resource "aws_security_group" "apigw_vpc_link" {
   tags = { Name = "${local.prefix}-apigw-vpc-link-sg" }
 }
 
-resource "aws_apigatewayv2_vpc_link" "alb" {
-  count = var.use_localstack ? 0 : 1
-
-  name               = "${local.prefix}-api-to-alb"
+resource "aws_apigatewayv2_vpc_link" "main" {
+  name               = "${local.prefix}-api-vpc-link"
   subnet_ids         = aws_subnet.private[*].id
-  security_group_ids = [aws_security_group.apigw_vpc_link[0].id]
+  security_group_ids = [aws_security_group.apigw_vpc_link.id]
 
-  tags = { Name = "${local.prefix}-api-to-alb" }
+  tags = { Name = "${local.prefix}-api-vpc-link" }
 }
 
-resource "aws_apigatewayv2_integration" "alb_proxy" {
+resource "aws_apigatewayv2_integration" "microservice" {
+  for_each = toset(local.microservices)
+
   api_id             = aws_apigatewayv2_api.main.id
   integration_type   = "HTTP_PROXY"
   integration_method = "ANY"
-
-  connection_type = var.use_localstack ? "INTERNET" : "VPC_LINK"
-  connection_id   = var.use_localstack ? null : aws_apigatewayv2_vpc_link.alb[0].id
-
-  integration_uri = var.use_localstack ? "http://${aws_lb.main.dns_name}" : (local.enable_alb_https ? aws_lb_listener.https[0].arn : aws_lb_listener.http.arn)
+  connection_type    = "VPC_LINK"
+  connection_id      = aws_apigatewayv2_vpc_link.main.id
+  integration_uri = var.use_localstack ? null : aws_service_discovery_service.microservice[each.key].arn
 
   timeout_milliseconds = 30000
-  description          = "Proxy API Gateway traffic to ALB; ALB handles service path routing."
+  description          = "Private proxy integration to ${each.key} service via Cloud Map."
+
+  # Ensure each service is running and registered before API integration is created.
+  depends_on = [aws_ecs_service.microservice]
 }
 
-resource "aws_apigatewayv2_route" "default_proxy" {
+resource "aws_apigatewayv2_route" "microservice" {
+  for_each = local.microservice_api_routes
+  
+
   api_id    = aws_apigatewayv2_api.main.id
-  route_key = "$default"
-  target    = "integrations/${aws_apigatewayv2_integration.alb_proxy.id}"
+  route_key = each.value.route_key
+  target    = "integrations/${aws_apigatewayv2_integration.microservice[each.value.service].id}"
+  authorization_type = var.use_localstack ? "NONE" : "JWT"
+  authorizer_id      = var.use_localstack ? null : aws_apigatewayv2_authorizer.cognito_jwt.id
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1156,6 +1015,19 @@ resource "aws_lambda_function" "fraud" {
   tags = { Name = "${local.prefix}-fraud-lambda" }
 }
 
+resource "aws_lambda_function" "default_bus_probe" {
+  function_name = "${local.prefix}-default-bus-probe-lambda"
+  role          = aws_iam_role.lambda_execution["default_bus_probe"].arn
+  runtime       = var.lambda_runtime
+  handler       = "default_bus_probe_lambda.handler"
+
+  s3_bucket        = aws_s3_bucket.lambda_artifacts.id
+  s3_key           = aws_s3_object.lambda_package["default_bus_probe"].key
+  source_code_hash = data.archive_file.lambda_package["default_bus_probe"].output_base64sha256
+
+  tags = { Name = "${local.prefix}-default-bus-probe-lambda" }
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step Functions – payment orchestration workflow
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1236,6 +1108,9 @@ resource "aws_cloudwatch_log_group" "payment_workflow" {
 resource "aws_sfn_state_machine" "payment_workflow" {
   name     = "${local.prefix}-payment-workflow"
   role_arn = aws_iam_role.step_functions.arn
+
+  # Avoid IAM propagation race by ensuring policy attachment exists first.
+  depends_on = [aws_iam_role_policy.step_functions]
 
   logging_configuration {
     include_execution_data = true
@@ -1420,19 +1295,12 @@ resource "aws_cloudwatch_event_bus" "main" {
   tags = { Name = "${local.prefix}-event-bus" }
 }
 
-resource "aws_cloudwatch_event_bus" "notifications" {
-  name = "notifications"
-  tags = { Name = "${local.prefix}-notifications-bus" }
-}
-
 resource "aws_cloudwatch_event_rule" "notifications" {
   name           = "${local.prefix}-notifications-rule"
   event_bus_name = aws_cloudwatch_event_bus.main.name
   event_pattern = jsonencode({
-    source = ["sbcbank.transactions"]
-    detail = {
-      eventType = ["transaction.created", "transaction.completed"]
-    }
+    source        = ["sbcbank.transactions", "sbcbank.fraud"]
+    "detail-type" = ["PaymentCompleted", "PaymentFailed", "FraudFlagged"]
   })
 }
 
@@ -1449,6 +1317,34 @@ resource "aws_lambda_permission" "allow_eventbridge_notification" {
   function_name = aws_lambda_function.notification.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.notifications.arn
+}
+
+# Temporary diagnostics rule: captures all events put on the default bus so we
+# can identify unexpected producers still using default instead of custom bus.
+resource "aws_cloudwatch_event_rule" "default_bus_diagnostics" {
+  count          = var.use_localstack ? 0 : 1
+  name           = "${local.prefix}-default-bus-diagnostics"
+  event_bus_name = "default"
+  event_pattern = jsonencode({
+  source = [{ "prefix" = "" }]
+})
+}
+
+resource "aws_cloudwatch_event_target" "default_bus_diagnostics_lambda" {
+  count          = var.use_localstack ? 0 : 1
+  rule           = aws_cloudwatch_event_rule.default_bus_diagnostics[count.index].name
+  event_bus_name = aws_cloudwatch_event_rule.default_bus_diagnostics[count.index].event_bus_name
+  target_id      = "default-bus-probe-lambda"
+  arn            = aws_lambda_function.default_bus_probe.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_default_bus_diagnostics" {
+  count         = var.use_localstack ? 0 : 1
+  statement_id  = "AllowEventBridgeInvokeDefaultBusProbeLambda"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.default_bus_probe.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.default_bus_diagnostics[count.index].arn
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1480,23 +1376,31 @@ locals {
     "notification"
   ]
 
-  microservice_route_paths = {
-    user         = "/users/*"
-    account      = "/accounts/*"
-    payment      = "/payments/*"
-    ledger       = "/ledgers/*"
-    statement    = "/statements/*"
-    notification = "/notifications/*"
+  microservice_api_prefixes = {
+    user         = "/users"
+    account      = "/accounts"
+    payment      = "/payments"
+    ledger       = "/ledgers"
+    statement    = "/statements"
+    notification = "/notifications"
   }
 
-  microservice_route_priorities = {
-    user         = 10
-    account      = 20
-    payment      = 30
-    ledger       = 40
-    statement    = 50
-    notification = 60
-  }
+  microservice_api_routes = merge(
+    {
+      for service, prefix in local.microservice_api_prefixes :
+      "${service}_root" => {
+        service   = service
+        route_key = "ANY ${prefix}"
+      }
+    },
+    {
+      for service, prefix in local.microservice_api_prefixes :
+      "${service}_proxy" => {
+        service   = service
+        route_key = "ANY ${prefix}/{proxy+}"
+      }
+    }
+  )
 
   # Service-level task permissions keep runtime access scoped by microservice.
   ecs_service_role_policies = {
@@ -1583,6 +1487,35 @@ locals {
   }
 }
 
+resource "aws_service_discovery_private_dns_namespace" "microservices" {
+  count = var.use_localstack ? 0 : 1
+  name  = "${local.prefix}.internal"
+  vpc   = aws_vpc.main.id
+  tags  = { Name = "${local.prefix}-microservices-namespace" }
+}
+
+resource "aws_service_discovery_service" "microservice" {
+   for_each = var.use_localstack ? toset([]) : toset(local.microservices)  
+
+  name = each.key
+
+  dns_config {
+    namespace_id   = aws_service_discovery_private_dns_namespace.microservices[0].id
+    routing_policy = "MULTIVALUE"
+
+    dns_records {
+      ttl  = 10
+      type = "SRV"
+    }
+  }
+
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+
+  tags = { Name = "${local.prefix}-${each.key}-discovery" }
+}
+
 resource "aws_iam_role_policy" "ecs_task_app_permissions" {
   for_each = local.ecs_service_role_policies
 
@@ -1648,17 +1581,21 @@ resource "aws_ecs_service" "microservice" {
     assign_public_ip = false
   }
 
-  load_balancer {
-    target_group_arn = aws_lb_target_group.microservice[each.key].arn
-    container_name   = "${each.key}-service"
-    container_port   = 80
+  dynamic "service_registries" {
+  for_each = var.use_localstack ? [] : [1]
+  content {
+    registry_arn   = aws_service_discovery_service.microservice[each.key].arn
+    container_name = "${each.key}-service"
+    container_port = 80
   }
+}
+
+  # Ensure ECS capacity provider attachment is in place before service creation.
+  depends_on = [aws_ecs_cluster_capacity_providers.main]
 
   lifecycle {
     ignore_changes = [task_definition]
   }
-
-  depends_on = [aws_lb_listener_rule.microservice]
 
   tags = { Name = "${local.prefix}-${each.key}-ecs-service" }
 }
@@ -1840,19 +1777,20 @@ resource "aws_cloudtrail" "main" {
 # CloudWatch Alarms – baseline operational alerts
 # ─────────────────────────────────────────────────────────────────────────────
 
-resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
-  alarm_name          = "${local.prefix}-alb-5xx-errors"
+resource "aws_cloudwatch_metric_alarm" "api_5xx" {
+  alarm_name          = "${local.prefix}-api-5xx-errors"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
-  metric_name         = "HTTPCode_ELB_5XX_Count"
-  namespace           = "AWS/ApplicationELB"
+  metric_name         = "5xx"
+  namespace           = "AWS/ApiGateway"
   period              = 60
   statistic           = "Sum"
   threshold           = 10
-  alarm_description   = "Alarm when ALB returns too many 5xx responses"
+  alarm_description   = "Alarm when API Gateway returns too many 5xx responses"
 
   dimensions = {
-    LoadBalancer = aws_lb.main.arn_suffix
+    ApiId = aws_apigatewayv2_api.main.id
+    Stage = aws_apigatewayv2_stage.default.name
   }
 }
 

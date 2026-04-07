@@ -1,8 +1,3 @@
-variable "alb_domain_name" {
-  description = "Domain name for the ALB ACM certificate"
-  type        = string
-  default     = ""
-}
 variable "project_name" {
   description = "Short name used as a prefix for all resource names."
   type        = string
