@@ -29,3 +29,7 @@ terraform.rc
 *.doc
 *.docx
 *.xls
+
+# Allow tracked pitch deck assets
+!pitch-deck/*.pptx
+!pitch-deck/*.png
