@@ -44,13 +44,13 @@ variable "private_subnet_cidrs" {
 # ── Database ─────────────────────────────────────────────────────────────────
 
 variable "db_instance_class" {
-  description = "RDS instance type."
+  description = "Aurora PostgreSQL instance class for cluster instances."
   type        = string
-  default     = "db.t3.micro"
+  default     = "db.t3.medium"
 }
 
 variable "db_engine_version" {
-  description = "PostgreSQL engine version for the RDS instance."
+  description = "Aurora PostgreSQL engine version for the database clusters."
   type        = string
   default     = "16.3"
 }
@@ -62,14 +62,14 @@ variable "db_name" {
 }
 
 variable "db_username" {
-  description = "Master username for the RDS instance."
+  description = "Master username for Aurora PostgreSQL clusters."
   type        = string
   default     = "sbcadmin"
   sensitive   = true
 }
 
 variable "db_password" {
-  description = "Master password for the RDS instance. Set via TF_VAR_db_password env var."
+  description = "Master password for Aurora PostgreSQL clusters. Set via TF_VAR_db_password env var."
   type        = string
   sensitive   = true
 }

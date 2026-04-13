@@ -191,70 +191,70 @@ resource "aws_route_table_association" "private" {
 # Security Groups
 # ─────────────────────────────────────────────────────────────────────────────
 
-resource "aws_security_group" "ecs_tasks" {
-  name        = "${local.prefix}-ecs-tasks-sg"
-  description = "Allow inbound traffic from API Gateway VPC Link to ECS tasks."
+resource "aws_security_group" "private_app" {
+  name        = "${local.prefix}-private-app-sg"
+  description = "Security group for private app tier (ECS tasks and API Gateway VPC Link ENIs)."
   vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port       = 80
     to_port         = 80
     protocol        = "tcp"
-    security_groups = [aws_security_group.apigw_vpc_link.id]
+    self            = true
   }
 
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "${local.prefix}-ecs-tasks-sg" }
+  tags = { Name = "${local.prefix}-private-app-sg" }
 }
 
-resource "aws_security_group" "rds" {
-  name        = "${local.prefix}-rds-sg"
-  description = "Allow inbound PostgreSQL from ECS tasks only."
+resource "aws_security_group" "private_data" {
+  name        = "${local.prefix}-private-data-sg"
+  description = "Security group for private data tier (Aurora and Redis)."
   vpc_id      = aws_vpc.main.id
 
-  ingress {
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.ecs_tasks.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "${local.prefix}-rds-sg" }
+  tags = { Name = "${local.prefix}-private-data-sg" }
 }
 
-resource "aws_security_group" "redis" {
-  name        = "${local.prefix}-redis-sg"
-  description = "Allow inbound Redis from ECS tasks only."
-  vpc_id      = aws_vpc.main.id
+resource "aws_security_group_rule" "private_app_to_data_postgres_egress" {
+  type                     = "egress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.private_app.id
+  source_security_group_id = aws_security_group.private_data.id
+}
 
-  ingress {
-    from_port       = 6379
-    to_port         = 6379
-    protocol        = "tcp"
-    security_groups = [aws_security_group.ecs_tasks.id]
-  }
+resource "aws_security_group_rule" "private_app_to_data_redis_egress" {
+  type                     = "egress"
+  from_port                = 6379
+  to_port                  = 6379
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.private_app.id
+  source_security_group_id = aws_security_group.private_data.id
+}
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+resource "aws_security_group_rule" "private_data_from_app_postgres_ingress" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.private_data.id
+  source_security_group_id = aws_security_group.private_app.id
+}
 
-  tags = { Name = "${local.prefix}-redis-sg" }
+resource "aws_security_group_rule" "private_data_from_app_redis_ingress" {
+  type                     = "ingress"
+  from_port                = 6379
+  to_port                  = 6379
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.private_data.id
+  source_security_group_id = aws_security_group.private_app.id
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -366,7 +366,7 @@ resource "aws_iam_role" "ecs_task" {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Relational Database (RDS PostgreSQL)
+# Relational Databases (Aurora PostgreSQL for account and payment services)
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_db_subnet_group" "main" {
@@ -375,25 +375,60 @@ resource "aws_db_subnet_group" "main" {
   tags       = { Name = "${local.prefix}-db-subnet-group" }
 }
 
-resource "aws_db_instance" "main" {
-  identifier             = "${local.prefix}-postgres"
-  engine                 = "postgres"
+resource "aws_rds_cluster" "account" {
+  cluster_identifier      = "${local.prefix}-account-aurora"
+  engine                  = "aurora-postgresql"
   engine_version         = var.db_engine_version
-  instance_class         = var.db_instance_class
-  allocated_storage      = 20
-  max_allocated_storage  = 100
+  database_name          = "account"
+  master_username        = var.db_username
+  master_password        = var.db_password
   storage_encrypted      = true
   kms_key_id             = var.enable_kms_customer_managed_keys ? aws_kms_key.transaction_data[0].arn : null
-  db_name                = var.db_name
-  username               = var.db_username
-  password               = var.db_password
   db_subnet_group_name   = aws_db_subnet_group.main.name
-  vpc_security_group_ids = [aws_security_group.rds.id]
-  multi_az               = var.environment == "prod"
+  vpc_security_group_ids = [aws_security_group.private_data.id]
   skip_final_snapshot    = var.environment != "prod"
   deletion_protection    = var.environment == "prod"
 
-  tags = { Name = "${local.prefix}-postgres" }
+  tags = { Name = "${local.prefix}-account-aurora" }
+}
+
+resource "aws_rds_cluster_instance" "account" {
+  identifier         = "${local.prefix}-account-aurora-1"
+  cluster_identifier = aws_rds_cluster.account.id
+  instance_class     = var.db_instance_class
+  engine             = aws_rds_cluster.account.engine
+  engine_version     = aws_rds_cluster.account.engine_version
+  publicly_accessible = false
+
+  tags = { Name = "${local.prefix}-account-aurora-1" }
+}
+
+resource "aws_rds_cluster" "payment" {
+  cluster_identifier      = "${local.prefix}-payment-aurora"
+  engine                  = "aurora-postgresql"
+  engine_version          = var.db_engine_version
+  database_name           = "payment"
+  master_username         = var.db_username
+  master_password         = var.db_password
+  storage_encrypted       = true
+  kms_key_id              = var.enable_kms_customer_managed_keys ? aws_kms_key.transaction_data[0].arn : null
+  db_subnet_group_name    = aws_db_subnet_group.main.name
+  vpc_security_group_ids  = [aws_security_group.private_data.id]
+  skip_final_snapshot     = var.environment != "prod"
+  deletion_protection     = var.environment == "prod"
+
+  tags = { Name = "${local.prefix}-payment-aurora" }
+}
+
+resource "aws_rds_cluster_instance" "payment" {
+  identifier          = "${local.prefix}-payment-aurora-1"
+  cluster_identifier  = aws_rds_cluster.payment.id
+  instance_class      = var.db_instance_class
+  engine              = aws_rds_cluster.payment.engine
+  engine_version      = aws_rds_cluster.payment.engine_version
+  publicly_accessible = false
+
+  tags = { Name = "${local.prefix}-payment-aurora-1" }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -414,7 +449,7 @@ resource "aws_elasticache_cluster" "redis" {
   engine_version       = var.redis_engine_version
   port                 = 6379
   subnet_group_name    = aws_elasticache_subnet_group.main.name
-  security_group_ids   = [aws_security_group.redis.id]
+  security_group_ids   = [aws_security_group.private_data.id]
 
   tags = { Name = "${local.prefix}-redis" }
 }
@@ -761,25 +796,10 @@ resource "aws_apigatewayv2_authorizer" "cognito_jwt" {
 }
 
 # API Gateway private integration to ECS microservices over VPC Link.
-resource "aws_security_group" "apigw_vpc_link" {
-  name        = "${local.prefix}-apigw-vpc-link-sg"
-  description = "Security group for API Gateway VPC Link ENIs."
-  vpc_id      = aws_vpc.main.id
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "${local.prefix}-apigw-vpc-link-sg" }
-}
-
 resource "aws_apigatewayv2_vpc_link" "main" {
   name               = "${local.prefix}-api-vpc-link"
   subnet_ids         = aws_subnet.private[*].id
-  security_group_ids = [aws_security_group.apigw_vpc_link.id]
+  security_group_ids = [aws_security_group.private_app.id]
 
   tags = { Name = "${local.prefix}-api-vpc-link" }
 }
@@ -1577,7 +1597,7 @@ resource "aws_ecs_service" "microservice" {
 
   network_configuration {
     subnets          = aws_subnet.private[*].id
-    security_groups  = [aws_security_group.ecs_tasks.id]
+    security_groups  = [aws_security_group.private_app.id]
     assign_public_ip = false
   }
 
@@ -1794,8 +1814,8 @@ resource "aws_cloudwatch_metric_alarm" "api_5xx" {
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
-  alarm_name          = "${local.prefix}-rds-high-cpu"
+resource "aws_cloudwatch_metric_alarm" "aurora_account_cpu_high" {
+  alarm_name          = "${local.prefix}-aurora-account-high-cpu"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
   metric_name         = "CPUUtilization"
@@ -1803,10 +1823,26 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
   period              = 300
   statistic           = "Average"
   threshold           = 80
-  alarm_description   = "Alarm when RDS CPU utilization is persistently high"
+  alarm_description   = "Alarm when Aurora account writer CPU utilization is persistently high"
 
   dimensions = {
-    DBInstanceIdentifier = aws_db_instance.main.id
+    DBInstanceIdentifier = aws_rds_cluster_instance.account.id
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "aurora_payment_cpu_high" {
+  alarm_name          = "${local.prefix}-aurora-payment-high-cpu"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 80
+  alarm_description   = "Alarm when Aurora payment writer CPU utilization is persistently high"
+
+  dimensions = {
+    DBInstanceIdentifier = aws_rds_cluster_instance.payment.id
   }
 }
 

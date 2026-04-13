@@ -28,9 +28,15 @@ output "ecs_task_role_arns" {
   value       = { for service, role in aws_iam_role.ecs_task : service => role.arn }
 }
 
-output "rds_endpoint" {
-  description = "Connection endpoint for the RDS PostgreSQL instance."
-  value       = aws_db_instance.main.endpoint
+output "aurora_account_endpoint" {
+  description = "Writer endpoint for the Aurora PostgreSQL cluster used by account service."
+  value       = aws_rds_cluster.account.endpoint
+  sensitive   = true
+}
+
+output "aurora_payment_endpoint" {
+  description = "Writer endpoint for the Aurora PostgreSQL cluster used by payment service."
+  value       = aws_rds_cluster.payment.endpoint
   sensitive   = true
 }
 
