@@ -134,13 +134,22 @@ resource "aws_subnet" "public" {
   tags = { Name = "${local.prefix}-public-${local.azs[count.index]}" }
 }
 
-resource "aws_subnet" "private" {
-  count             = length(var.private_subnet_cidrs)
+resource "aws_subnet" "private_app" {
+  count             = length(var.private_app_subnet_cidrs)
   vpc_id            = aws_vpc.main.id
-  cidr_block        = var.private_subnet_cidrs[count.index]
+  cidr_block        = var.private_app_subnet_cidrs[count.index]
   availability_zone = local.azs[count.index]
 
-  tags = { Name = "${local.prefix}-private-${local.azs[count.index]}" }
+  tags = { Name = "${local.prefix}-private-app-${local.azs[count.index]}" }
+}
+
+resource "aws_subnet" "private_data" {
+  count             = length(var.private_data_subnet_cidrs)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.private_data_subnet_cidrs[count.index]
+  availability_zone = local.azs[count.index]
+
+  tags = { Name = "${local.prefix}-private-data-${local.azs[count.index]}" }
 }
 
 resource "aws_eip" "nat" {
@@ -171,20 +180,41 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-resource "aws_route_table" "private" {
-  count  = length(aws_subnet.private)
+resource "aws_route_table" "private_app" {
+  count  = length(aws_subnet.private_app)
   vpc_id = aws_vpc.main.id
   route {
     cidr_block     = "0.0.0.0/0"
     nat_gateway_id = aws_nat_gateway.main[count.index].id
   }
-  tags = { Name = "${local.prefix}-private-rt-${count.index}" }
+  tags = { Name = "${local.prefix}-private-app-rt-${count.index}" }
 }
 
-resource "aws_route_table_association" "private" {
-  count          = length(aws_subnet.private)
-  subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private[count.index].id
+resource "aws_route_table_association" "private_app" {
+  count          = length(aws_subnet.private_app)
+  subnet_id      = aws_subnet.private_app[count.index].id
+  route_table_id = aws_route_table.private_app[count.index].id
+}
+
+resource "aws_route_table" "private_data" {
+  vpc_id = aws_vpc.main.id
+  tags   = { Name = "${local.prefix}-private-data-rt" }
+}
+
+resource "aws_route_table_association" "private_data" {
+  count          = length(aws_subnet.private_data)
+  subnet_id      = aws_subnet.private_data[count.index].id
+  route_table_id = aws_route_table.private_data.id
+}
+
+# Optional S3 private access path for app subnets via gateway endpoint.
+resource "aws_vpc_endpoint" "s3_gateway" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = aws_route_table.private_app[*].id
+
+  tags = { Name = "${local.prefix}-s3-gateway-endpoint" }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -371,7 +401,7 @@ resource "aws_iam_role" "ecs_task" {
 
 resource "aws_db_subnet_group" "main" {
   name       = "${local.prefix}-db-subnet-group"
-  subnet_ids = aws_subnet.private[*].id
+  subnet_ids = aws_subnet.private_data[*].id
   tags       = { Name = "${local.prefix}-db-subnet-group" }
 }
 
@@ -437,7 +467,7 @@ resource "aws_rds_cluster_instance" "payment" {
 
 resource "aws_elasticache_subnet_group" "main" {
   name       = "${local.prefix}-redis-subnet-group"
-  subnet_ids = aws_subnet.private[*].id
+  subnet_ids = aws_subnet.private_data[*].id
 }
 
 resource "aws_elasticache_cluster" "redis" {
@@ -452,6 +482,36 @@ resource "aws_elasticache_cluster" "redis" {
   security_group_ids   = [aws_security_group.private_data.id]
 
   tags = { Name = "${local.prefix}-redis" }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DynamoDB – ledger and fraud event stores
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_dynamodb_table" "ledger" {
+  name         = "${local.prefix}-ledger"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
+
+  attribute {
+    name = "id"
+    type = "N"
+  }
+
+  tags = { Name = "${local.prefix}-ledger" }
+}
+
+resource "aws_dynamodb_table" "fraud_events" {
+  name         = "${local.prefix}-fraud-events"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "event_id"
+
+  attribute {
+    name = "event_id"
+    type = "S"
+  }
+
+  tags = { Name = "${local.prefix}-fraud-events" }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -798,7 +858,7 @@ resource "aws_apigatewayv2_authorizer" "cognito_jwt" {
 # API Gateway private integration to ECS microservices over VPC Link.
 resource "aws_apigatewayv2_vpc_link" "main" {
   name               = "${local.prefix}-api-vpc-link"
-  subnet_ids         = aws_subnet.private[*].id
+  subnet_ids         = aws_subnet.private_app[*].id
   security_group_ids = [aws_security_group.private_app.id]
 
   tags = { Name = "${local.prefix}-api-vpc-link" }
@@ -987,7 +1047,7 @@ resource "aws_iam_role_policy" "lambda_fraud_data_access" {
         "dynamodb:PutItem"
       ]
       Resource = [
-        "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.prefix}-fraud-events"
+        aws_dynamodb_table.fraud_events.arn
       ]
     }]
   })
@@ -1463,7 +1523,7 @@ locals {
           "dynamodb:Query"
         ]
         Resource = [
-          "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.prefix}-ledger"
+          aws_dynamodb_table.ledger.arn
         ]
       }
     ]
@@ -1477,7 +1537,7 @@ locals {
           "dynamodb:Query"
         ]
         Resource = [
-          "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.prefix}-ledger"
+          aws_dynamodb_table.ledger.arn
         ]
       },
       {
@@ -1596,7 +1656,7 @@ resource "aws_ecs_service" "microservice" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = aws_subnet.private[*].id
+    subnets          = aws_subnet.private_app[*].id
     security_groups  = [aws_security_group.private_app.id]
     assign_public_ip = false
   }

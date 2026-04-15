@@ -220,13 +220,19 @@ terraform init -reconfigure
 terraform apply -var-file="localstack.tfvars" -var="db_password=localpassword"
 ```
 
-3. Publish a compliance metric snapshot from local PostgreSQL into CloudWatch Logs and S3 (for Athena):
+3. Sync ledger records from local PostgreSQL into the DynamoDB ledger table:
+
+```powershell
+./scripts/sync-ledger-to-dynamodb.ps1
+```
+
+4. Publish a compliance metric snapshot from local PostgreSQL into CloudWatch Logs and S3 (for Athena):
 
 ```powershell
 ./scripts/publish-localstack-compliance-metrics.ps1
 ```
 
-4. Verify resources:
+5. Verify resources:
 
 ```powershell
 cd terraform
@@ -237,6 +243,7 @@ terraform output compliance_dashboard_name
 
 Notes:
 
+- The ledger sync script reads from the backend postgres container and writes items to DynamoDB table `sbcbank-dev-ledger` by default.
 - Athena dataset source bucket and query results bucket are provisioned by Terraform.
 - CloudWatch dashboard widgets and alarms read custom metrics under namespace `SBCBank/Compliance`.
 - Run the publish script whenever you want fresh compliance KPI values reflected in CloudWatch and Athena.

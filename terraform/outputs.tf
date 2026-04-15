@@ -9,8 +9,18 @@ output "public_subnet_ids" {
 }
 
 output "private_subnet_ids" {
-  description = "IDs of the private subnets."
-  value       = aws_subnet.private[*].id
+  description = "IDs of all private subnets (app and data tiers)."
+  value       = concat(aws_subnet.private_app[*].id, aws_subnet.private_data[*].id)
+}
+
+output "private_app_subnet_ids" {
+  description = "IDs of private application subnets."
+  value       = aws_subnet.private_app[*].id
+}
+
+output "private_data_subnet_ids" {
+  description = "IDs of private data subnets."
+  value       = aws_subnet.private_data[*].id
 }
 
 output "ecs_cluster_name" {
@@ -44,6 +54,16 @@ output "redis_endpoint" {
   description = "Connection endpoint for the ElastiCache Redis cluster."
   value       = aws_elasticache_cluster.redis.cache_nodes[0].address
   sensitive   = true
+}
+
+output "ledger_dynamodb_table_name" {
+  description = "DynamoDB table name used for ledger records."
+  value       = aws_dynamodb_table.ledger.name
+}
+
+output "fraud_events_dynamodb_table_name" {
+  description = "DynamoDB table name used for fraud event records."
+  value       = aws_dynamodb_table.fraud_events.name
 }
 
 output "frontend_bucket_name" {
