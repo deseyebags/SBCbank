@@ -330,6 +330,48 @@ resource "aws_wafv2_web_acl" "api" {
   tags = { Name = "${local.prefix}-api-web-acl" }
 }
 
+resource "aws_wafv2_web_acl" "cloudfront" {
+  count    = var.use_localstack ? 0 : 1
+  provider = aws.global
+
+  name  = "${local.prefix}-cloudfront-web-acl"
+  scope = "CLOUDFRONT"
+
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 10
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesCommonRuleSet"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${local.prefix}-waf-cloudfront-common"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${local.prefix}-cloudfront-web-acl"
+    sampled_requests_enabled   = true
+  }
+
+  tags = { Name = "${local.prefix}-cloudfront-web-acl" }
+}
+
 resource "aws_wafv2_web_acl_association" "api" {
   resource_arn = aws_apigatewayv2_stage.default.arn
   web_acl_arn  = aws_wafv2_web_acl.api.arn
@@ -737,6 +779,7 @@ resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
   default_root_object = "index.html"
   price_class         = "PriceClass_100"
+  web_acl_id          = var.use_localstack ? null : aws_wafv2_web_acl.cloudfront[0].arn
 
   origin {
     domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
@@ -1439,6 +1482,57 @@ resource "terraform_data" "fraud_detector_stub" {
     detector_id = "${local.prefix}-${var.fraud_detector_id}"
     service     = "frauddetector"
     status      = "stub"
+  }
+}
+
+# LocalStack parity stubs for services/components present in architecture docs
+# but intentionally not provisioned as concrete Terraform resources yet.
+resource "terraform_data" "localstack_route53_stub" {
+  count = var.use_localstack ? 1 : 0
+
+  input = {
+    service   = "route53"
+    component = "public-hosted-zone-and-alias-records"
+    status    = "stub"
+  }
+}
+
+resource "terraform_data" "localstack_guardduty_stub" {
+  count = var.use_localstack ? 1 : 0
+
+  input = {
+    service = "guardduty"
+    status  = "stub"
+  }
+}
+
+resource "terraform_data" "localstack_secrets_manager_stub" {
+  count = var.use_localstack ? 1 : 0
+
+  input = {
+    service   = "secretsmanager"
+    component = "application-secrets-and-rotation"
+    status    = "stub"
+  }
+}
+
+resource "terraform_data" "localstack_quicksight_stub" {
+  count = var.use_localstack ? 1 : 0
+
+  input = {
+    service   = "quicksight"
+    component = "compliance-dashboard"
+    status    = "stub"
+  }
+}
+
+resource "terraform_data" "localstack_dashboard_lambda_stub" {
+  count = var.use_localstack ? 1 : 0
+
+  input = {
+    service   = "lambda"
+    component = "dashboard_lambda"
+    status    = "stub"
   }
 }
 
