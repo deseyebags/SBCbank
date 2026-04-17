@@ -76,6 +76,22 @@ output "cloudfront_domain_name" {
   value       = aws_cloudfront_distribution.frontend.domain_name
 }
 
+output "route53_zone_name" {
+  description = "Route 53 hosted zone name used in LocalStack for DNS emulation."
+  value       = try(aws_route53_zone.frontend[0].name, null)
+}
+
+output "route53_frontend_record_fqdn" {
+  description = "Route 53 frontend CNAME record used in LocalStack for CloudFront routing."
+  value       = try(aws_route53_record.frontend_cname[0].fqdn, null)
+}
+
+output "db_master_secret_arn" {
+  description = "Secrets Manager ARN for localstack-emulated DB master credentials."
+  value       = try(aws_secretsmanager_secret.db_master[0].arn, null)
+  sensitive   = true
+}
+
 output "api_gateway_endpoint" {
   description = "Base URL of the HTTP API Gateway."
   value       = aws_apigatewayv2_stage.default.invoke_url

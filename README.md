@@ -226,10 +226,18 @@ terraform apply -var-file="localstack.tfvars" -var="db_password=localpassword"
 ./scripts/sync-ledger-to-dynamodb.ps1
 ```
 
+```bash
+./scripts/sync-ledger-to-dynamodb.sh
+```
+
 4. Publish a compliance metric snapshot from local PostgreSQL into CloudWatch Logs and S3 (for Athena):
 
 ```powershell
 ./scripts/publish-localstack-compliance-metrics.ps1
+```
+
+```bash
+./scripts/publish-localstack-compliance-metrics.sh
 ```
 
 5. Verify resources:

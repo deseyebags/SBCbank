@@ -60,6 +60,7 @@ Role permissions:
 
 - `docker-compose.yml`: active local development stack.
 - `docker-compose.localstack.yml`: compatibility stack retained during migration.
+- `docker-compose.db-metabase.yml`: PostgreSQL + Metabase only (analytics/dashboard setup).
 
 ## Architecture Notes
 

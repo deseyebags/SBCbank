@@ -735,8 +735,9 @@ resource "aws_sqs_queue_policy" "manual_review" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_s3_bucket" "frontend" {
-  bucket = "${local.prefix}-frontend-${data.aws_caller_identity.current.account_id}"
-  tags   = { Name = "${local.prefix}-frontend" }
+  bucket        = "${local.prefix}-frontend-${data.aws_caller_identity.current.account_id}"
+  force_destroy = var.use_localstack
+  tags          = { Name = "${local.prefix}-frontend" }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "frontend" {
@@ -1485,10 +1486,50 @@ resource "terraform_data" "fraud_detector_stub" {
   }
 }
 
+# Route 53 (LocalStack Pro) – emulate DNS path from users to CloudFront.
+resource "aws_route53_zone" "frontend" {
+  count = var.use_localstack ? 1 : 0
+
+  name = "${local.prefix}.local"
+  tags = { Name = "${local.prefix}-route53-zone" }
+}
+
+resource "aws_route53_record" "frontend_cname" {
+  count = var.use_localstack ? 1 : 0
+
+  zone_id = aws_route53_zone.frontend[0].zone_id
+  name    = "app.${trimsuffix(aws_route53_zone.frontend[0].name, ".")}"
+  type    = "CNAME"
+  ttl     = 300
+  records = [aws_cloudfront_distribution.frontend.domain_name]
+}
+
+# Secrets Manager (LocalStack Pro) – emulate centralized runtime secret store.
+resource "aws_secretsmanager_secret" "db_master" {
+  count = var.use_localstack ? 1 : 0
+
+  name                    = "${local.prefix}/db/master"
+  recovery_window_in_days = 0
+  tags                    = { Name = "${local.prefix}-db-master-secret" }
+}
+
+resource "aws_secretsmanager_secret_version" "db_master" {
+  count = var.use_localstack ? 1 : 0
+
+  secret_id = aws_secretsmanager_secret.db_master[0].id
+  secret_string = jsonencode({
+    username            = var.db_username
+    password            = var.db_password
+    account_db_endpoint = aws_rds_cluster.account.endpoint
+    payment_db_endpoint = aws_rds_cluster.payment.endpoint
+    redis_endpoint      = aws_elasticache_cluster.redis.cache_nodes[0].address
+  })
+}
+
 # LocalStack parity stubs for services/components present in architecture docs
 # but intentionally not provisioned as concrete Terraform resources yet.
 resource "terraform_data" "localstack_route53_stub" {
-  count = var.use_localstack ? 1 : 0
+  count = var.use_localstack ? 0 : 1
 
   input = {
     service   = "route53"
@@ -1507,7 +1548,7 @@ resource "terraform_data" "localstack_guardduty_stub" {
 }
 
 resource "terraform_data" "localstack_secrets_manager_stub" {
-  count = var.use_localstack ? 1 : 0
+  count = var.use_localstack ? 0 : 1
 
   input = {
     service   = "secretsmanager"
@@ -1779,13 +1820,15 @@ resource "aws_ecs_service" "microservice" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_s3_bucket" "statements" {
-  bucket = "${local.prefix}-statements-${data.aws_caller_identity.current.account_id}"
-  tags   = { Name = "${local.prefix}-statements" }
+  bucket        = "${local.prefix}-statements-${data.aws_caller_identity.current.account_id}"
+  force_destroy = var.use_localstack
+  tags          = { Name = "${local.prefix}-statements" }
 }
 
 resource "aws_s3_bucket" "lambda_artifacts" {
-  bucket = "${local.prefix}-lambda-artifacts-${data.aws_caller_identity.current.account_id}"
-  tags   = { Name = "${local.prefix}-lambda-artifacts" }
+  bucket        = "${local.prefix}-lambda-artifacts-${data.aws_caller_identity.current.account_id}"
+  force_destroy = var.use_localstack
+  tags          = { Name = "${local.prefix}-lambda-artifacts" }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "lambda_artifacts" {
@@ -1870,8 +1913,9 @@ resource "aws_s3_bucket_policy" "statements" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_s3_bucket" "cloudtrail" {
-  bucket = "${local.prefix}-cloudtrail-${data.aws_caller_identity.current.account_id}"
-  tags   = { Name = "${local.prefix}-cloudtrail" }
+  bucket        = "${local.prefix}-cloudtrail-${data.aws_caller_identity.current.account_id}"
+  force_destroy = var.use_localstack
+  tags          = { Name = "${local.prefix}-cloudtrail" }
 }
 
 resource "aws_s3_bucket_public_access_block" "cloudtrail" {
@@ -2005,8 +2049,9 @@ resource "aws_cloudwatch_metric_alarm" "aurora_payment_cpu_high" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_s3_bucket" "athena_results" {
-  bucket = "${local.prefix}-athena-results-${data.aws_caller_identity.current.account_id}"
-  tags   = { Name = "${local.prefix}-athena-results" }
+  bucket        = "${local.prefix}-athena-results-${data.aws_caller_identity.current.account_id}"
+  force_destroy = var.use_localstack
+  tags          = { Name = "${local.prefix}-athena-results" }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "athena_results" {
@@ -2037,8 +2082,9 @@ resource "aws_s3_bucket_versioning" "athena_results" {
 }
 
 resource "aws_s3_bucket" "compliance_metrics_data" {
-  bucket = "${local.prefix}-compliance-metrics-${data.aws_caller_identity.current.account_id}"
-  tags   = { Name = "${local.prefix}-compliance-metrics" }
+  bucket        = "${local.prefix}-compliance-metrics-${data.aws_caller_identity.current.account_id}"
+  force_destroy = var.use_localstack
+  tags          = { Name = "${local.prefix}-compliance-metrics" }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "compliance_metrics_data" {
