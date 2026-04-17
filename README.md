@@ -66,21 +66,29 @@ Windows PowerShell alternative:
 Copy-Item backend\.env.runtime.example backend\.env.runtime
 ```
 
-3. Start backend stack:
+3. Start local PostgreSQL and load mock data:
+
+```powershell
+./scripts/start-local-postgres-and-load-data.ps1
+```
+
+This starts the local `postgres` container and seeds dashboard-ready records into the local `scbbank` database.
+
+4. Start backend stack:
 
 ```bash
 cd backend
 docker compose up --build -d
 ```
 
-4. Stop backend stack:
+5. Stop backend stack:
 
 ```bash
 cd backend
 docker compose down
 ```
 
-5. Start frontend development server:
+6. Start frontend development server:
 
 ```bash
 cd frontend
@@ -88,7 +96,7 @@ npm install
 npm run dev
 ```
 
-6. Sign in through the frontend at `http://localhost:5173/login`:
+7. Sign in through the frontend at `http://localhost:5173/login`:
 
 - Admin: `admin` / `admin123`
 - User: account ID + matching account email
@@ -219,8 +227,15 @@ cd terraform
 terraform init -reconfigure
 terraform apply -var-file="localstack.tfvars" -var="db_password=localpassword"
 ```
+3. Start local PostgreSQL and load mock data:
 
-3. Sync ledger records from local PostgreSQL into the DynamoDB ledger table:
+```powershell
+./scripts/start-local-postgres-and-load-data.ps1
+```
+
+This starts the local `postgres` container and seeds dashboard-ready records into the local `scbbank` database.
+
+4. Sync ledger records from local PostgreSQL into the DynamoDB ledger table:
 
 ```powershell
 ./scripts/sync-ledger-to-dynamodb.ps1
@@ -230,7 +245,7 @@ terraform apply -var-file="localstack.tfvars" -var="db_password=localpassword"
 ./scripts/sync-ledger-to-dynamodb.sh
 ```
 
-4. Publish a compliance metric snapshot from local PostgreSQL into CloudWatch Logs and S3 (for Athena):
+5. Publish a compliance metric snapshot from local PostgreSQL into CloudWatch Logs and S3 (for Athena):
 
 ```powershell
 ./scripts/publish-localstack-compliance-metrics.ps1
@@ -240,7 +255,7 @@ terraform apply -var-file="localstack.tfvars" -var="db_password=localpassword"
 ./scripts/publish-localstack-compliance-metrics.sh
 ```
 
-5. Verify resources:
+6. Verify resources:
 
 ```powershell
 cd terraform
