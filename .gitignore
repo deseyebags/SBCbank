@@ -32,3 +32,7 @@ backend/_env.runtime
 *.doc
 *.docx
 *.xls
+
+*.github/agents/*
+*.github/skills/*
+*.github/copilot-instructions.md
