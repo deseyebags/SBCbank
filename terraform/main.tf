@@ -227,10 +227,10 @@ resource "aws_security_group" "private_app" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port       = 80
-    to_port         = 80
-    protocol        = "tcp"
-    self            = true
+    from_port = 80
+    to_port   = 80
+    protocol  = "tcp"
+    self      = true
   }
 
   egress {
@@ -448,8 +448,8 @@ resource "aws_db_subnet_group" "main" {
 }
 
 resource "aws_rds_cluster" "account" {
-  cluster_identifier      = "${local.prefix}-account-aurora"
-  engine                  = "aurora-postgresql"
+  cluster_identifier     = "${local.prefix}-account-aurora"
+  engine                 = "aurora-postgresql"
   engine_version         = var.db_engine_version
   database_name          = "account"
   master_username        = var.db_username
@@ -465,29 +465,29 @@ resource "aws_rds_cluster" "account" {
 }
 
 resource "aws_rds_cluster_instance" "account" {
-  identifier         = "${local.prefix}-account-aurora-1"
-  cluster_identifier = aws_rds_cluster.account.id
-  instance_class     = var.db_instance_class
-  engine             = aws_rds_cluster.account.engine
-  engine_version     = aws_rds_cluster.account.engine_version
+  identifier          = "${local.prefix}-account-aurora-1"
+  cluster_identifier  = aws_rds_cluster.account.id
+  instance_class      = var.db_instance_class
+  engine              = aws_rds_cluster.account.engine
+  engine_version      = aws_rds_cluster.account.engine_version
   publicly_accessible = false
 
   tags = { Name = "${local.prefix}-account-aurora-1" }
 }
 
 resource "aws_rds_cluster" "payment" {
-  cluster_identifier      = "${local.prefix}-payment-aurora"
-  engine                  = "aurora-postgresql"
-  engine_version          = var.db_engine_version
-  database_name           = "payment"
-  master_username         = var.db_username
-  master_password         = var.db_password
-  storage_encrypted       = true
-  kms_key_id              = var.enable_kms_customer_managed_keys ? aws_kms_key.transaction_data[0].arn : null
-  db_subnet_group_name    = aws_db_subnet_group.main.name
-  vpc_security_group_ids  = [aws_security_group.private_data.id]
-  skip_final_snapshot     = var.environment != "prod"
-  deletion_protection     = var.environment == "prod"
+  cluster_identifier     = "${local.prefix}-payment-aurora"
+  engine                 = "aurora-postgresql"
+  engine_version         = var.db_engine_version
+  database_name          = "payment"
+  master_username        = var.db_username
+  master_password        = var.db_password
+  storage_encrypted      = true
+  kms_key_id             = var.enable_kms_customer_managed_keys ? aws_kms_key.transaction_data[0].arn : null
+  db_subnet_group_name   = aws_db_subnet_group.main.name
+  vpc_security_group_ids = [aws_security_group.private_data.id]
+  skip_final_snapshot    = var.environment != "prod"
+  deletion_protection    = var.environment == "prod"
 
   tags = { Name = "${local.prefix}-payment-aurora" }
 }
@@ -916,7 +916,7 @@ resource "aws_apigatewayv2_integration" "microservice" {
   integration_method = "ANY"
   connection_type    = "VPC_LINK"
   connection_id      = aws_apigatewayv2_vpc_link.main.id
-  integration_uri = var.use_localstack ? null : aws_service_discovery_service.microservice[each.key].arn
+  integration_uri    = var.use_localstack ? null : aws_service_discovery_service.microservice[each.key].arn
 
   timeout_milliseconds = 30000
   description          = "Private proxy integration to ${each.key} service via Cloud Map."
@@ -927,11 +927,11 @@ resource "aws_apigatewayv2_integration" "microservice" {
 
 resource "aws_apigatewayv2_route" "microservice" {
   for_each = local.microservice_api_routes
-  
 
-  api_id    = aws_apigatewayv2_api.main.id
-  route_key = each.value.route_key
-  target    = "integrations/${aws_apigatewayv2_integration.microservice[each.value.service].id}"
+
+  api_id             = aws_apigatewayv2_api.main.id
+  route_key          = each.value.route_key
+  target             = "integrations/${aws_apigatewayv2_integration.microservice[each.value.service].id}"
   authorization_type = var.use_localstack ? "NONE" : "JWT"
   authorizer_id      = var.use_localstack ? null : aws_apigatewayv2_authorizer.cognito_jwt.id
 }
@@ -1450,8 +1450,8 @@ resource "aws_cloudwatch_event_rule" "default_bus_diagnostics" {
   name           = "${local.prefix}-default-bus-diagnostics"
   event_bus_name = "default"
   event_pattern = jsonencode({
-  source = [{ "prefix" = "" }]
-})
+    source = [{ "prefix" = "" }]
+  })
 }
 
 resource "aws_cloudwatch_event_target" "default_bus_diagnostics_lambda" {
@@ -1710,7 +1710,7 @@ resource "aws_service_discovery_private_dns_namespace" "microservices" {
 }
 
 resource "aws_service_discovery_service" "microservice" {
-   for_each = var.use_localstack ? toset([]) : toset(local.microservices)  
+  for_each = var.use_localstack ? toset([]) : toset(local.microservices)
 
   name = each.key
 
@@ -1797,13 +1797,13 @@ resource "aws_ecs_service" "microservice" {
   }
 
   dynamic "service_registries" {
-  for_each = var.use_localstack ? [] : [1]
-  content {
-    registry_arn   = aws_service_discovery_service.microservice[each.key].arn
-    container_name = "${each.key}-service"
-    container_port = 80
+    for_each = var.use_localstack ? [] : [1]
+    content {
+      registry_arn   = aws_service_discovery_service.microservice[each.key].arn
+      container_name = "${each.key}-service"
+      container_port = 80
+    }
   }
-}
 
   # Ensure ECS capacity provider attachment is in place before service creation.
   depends_on = [aws_ecs_cluster_capacity_providers.main]
