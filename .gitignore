@@ -24,6 +24,9 @@ override.tf.json
 terraform.rc
 
 .env.runtime
+backend/_env.runtime
+*.env.*
+**._env.*
 *.pptx
 *.png
 *.doc
