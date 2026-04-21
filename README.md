@@ -12,8 +12,9 @@ The active development path is Docker and Docker Compose only. Local runtime no 
 2. [Prerequisites](#prerequisites)
 3. [Quickstart](#quickstart)
 4. [Service Endpoints](#service-endpoints)
-5. [Repository Notes](#repository-notes)
-6. [Legacy Infrastructure Assets](#legacy-infrastructure-assets)
+5. [Metabase Dashboards (QuickSight Alternative)](#metabase-dashboards-quicksight-alternative)
+6. [Repository Notes](#repository-notes)
+7. [Legacy Infrastructure Assets](#legacy-infrastructure-assets)
 
 ---
 
@@ -169,6 +170,47 @@ GROUP BY period
 ORDER BY period DESC;
 ```
 
+### Metabase Setup and Data Migration
+
+Use this path when you only need PostgreSQL + Metabase for analytics work:
+
+1. Start PostgreSQL and Metabase only:
+
+```bash
+cd backend
+docker compose -f docker-compose.db-metabase.yml up -d
+```
+
+2. Open Metabase at `http://localhost:3001` and complete first-time setup.
+
+3. Export Metabase dashboards/questions/users before moving to another machine:
+
+```powershell
+./scripts/export-metabase-data.ps1
+```
+
+```bash
+./scripts/export-metabase-data.sh
+```
+
+4. Import the same Metabase app data archive on the target machine:
+
+```powershell
+./scripts/import-metabase-data.ps1
+```
+
+```bash
+./scripts/import-metabase-data.sh
+```
+
+5. Defaults used by export/import scripts:
+
+- Metabase volume: `backend_metabase_data`
+- Archive file: `artifacts/metabase_data.tar.gz`
+- Compose file: `backend/docker-compose.db-metabase.yml`
+
+If you also need identical underlying banking dataset/query results, migrate the PostgreSQL volume (`backend_postgres_data`) as well.
+
 ---
 
 ## Repository Notes
@@ -227,6 +269,7 @@ cd terraform
 terraform init -reconfigure
 terraform apply -var-file="localstack.tfvars" -var="db_password=localpassword"
 ```
+
 3. Start local PostgreSQL and load mock data:
 
 ```powershell
